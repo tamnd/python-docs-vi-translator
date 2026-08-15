@@ -1,0 +1,30 @@
+# Build
+dist/
+build/
+*.egg-info/
+
+# Environments
+.venv/
+
+# Caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+
+# Working state: the durable queue, traces, fetched corpora
+work/
+corpus/
+reports/
+
+# Design notes live in ~/notes/Spec/2119 and are not part of this repo.
+# Ignored so they cannot be committed by accident.
+docs/
+
+# OS
+.DS_Store
