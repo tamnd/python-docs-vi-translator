@@ -12,15 +12,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  UV_LOCKED: "1"
-
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
           python-version: "3.14"
@@ -37,20 +34,27 @@ jobs:
         run: uv run mypy --strict src/
 
   test:
+    name: test (${{ matrix.os }}, ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
+    # A prerelease breaking is information, not a reason to block main. Every
+    # supported version is required.
+    continue-on-error: ${{ matrix.prerelease || false }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
-        python: ["3.14"]
         include:
+          - os: ubuntu-latest
+            python: "3.14"
           - os: macos-latest
             python: "3.14"
+          - os: windows-latest
+            python: "3.14"
           - os: ubuntu-latest
-            python: "3.15-dev"
+            python: "3.15"
+            prerelease: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
           python-version: ${{ matrix.python }}
@@ -62,7 +66,7 @@ jobs:
 
       - name: upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.14'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: coverage.xml
@@ -70,8 +74,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
           python-version: "3.14"
@@ -79,12 +83,12 @@ jobs:
       - name: build
         run: uv build
 
-      - name: the wheel installs and the entry point runs
+      - name: the wheel installs and its entry point runs
         run: |
-          uv tool install --from dist/*.whl python-docs-vi-translator
+          uv tool install --from "$(ls dist/*.whl)" python-docs-vi-translator
           pydocvi version
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
