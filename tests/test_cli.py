@@ -489,7 +489,7 @@ class TestGlossaryCurate:
     ) -> None:
         result = runner.invoke(app, ["glossary", "curate", "--yes"])
         assert result.exit_code == ExitCode.CHECK_FAILED
-        assert "glossary mine" in result.stdout
+        assert "glossary mine" in result.stdout.replace("\n", "")
 
     def test_a_run_writes_the_proposal_and_not_the_glossary(
         self,
@@ -565,9 +565,12 @@ class TestGlossaryCheck:
         assert "G05" in result.stdout
 
     def test_a_missing_glossary_names_the_path(self, content: Path) -> None:
+        """The newlines come out because the console wraps a long path, and a
+        temporary directory is long enough to wrap on some runners and not
+        others. The message is what matters, not where the width broke it."""
         result = runner.invoke(app, ["glossary", "check"])
         assert result.exit_code == ExitCode.CHECK_FAILED
-        assert "manifests/glossary.yaml" in result.stdout
+        assert "manifests/glossary.yaml" in result.stdout.replace("\n", "")
 
 
 class TestGlossaryShow:
@@ -648,7 +651,7 @@ class TestGlossaryBump:
         write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
         result = runner.invoke(app, ["glossary", "bump", "--yes"])
         assert result.exit_code == ExitCode.CHECK_FAILED
-        assert "glossary curate" in result.stdout
+        assert "glossary curate" in result.stdout.replace("\n", "")
 
 
 class TestGlossaryDiff:
@@ -667,4 +670,4 @@ class TestGlossaryDiff:
         write_glossary(content, 'version: 2\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
         result = runner.invoke(app, ["glossary", "diff", "1", "2"])
         assert result.exit_code == ExitCode.CHECK_FAILED
-        assert "v1.yaml" in result.stdout
+        assert "v1.yaml" in result.stdout.replace("\n", "")
