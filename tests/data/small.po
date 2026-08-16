@@ -1,0 +1,27 @@
+# Translators:
+# Someone, 2026
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: Python 3.15\n"
+"Last-Translator: Someone, 2026\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: vi\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+msgid "Dealing with Bugs"
+msgstr "Xử lý lỗi"
+
+msgid "An untranslated string with a :func:`role` in it."
+msgstr ""
+
+msgid ""
+"A string long enough that it has to be wrapped across more than one physical "
+"line when it is written back out again."
+msgstr ""
+
+msgid "A line\nwith an embedded newline."
+msgstr ""
