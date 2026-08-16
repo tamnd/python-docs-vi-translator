@@ -31,12 +31,26 @@ WRAP_WIDTH = LINE_WIDTH - 2
 #: it carries a version number.
 SEGMENT_HASH_PREFIX = b"pydocvi.seg.1"
 
+#: The escapes gettext understands, backslash first so that the others can be
+#: introduced without being escaped again on the next pass.
+#:
+#: The corpus only ever uses three of these. The rest are here because a
+#: carriage return, a vertical tab or a form feed left unescaped goes into the
+#: file as itself, and ``textwrap`` turns every one of them into a space on the
+#: way out. That is a silent corruption of a translation, found by the property
+#: test rather than by anything in the corpus.
 _ESCAPES = (
     (chr(92), chr(92) * 2),
     ('"', chr(92) + '"'),
     ("\n", chr(92) + "n"),
     ("\t", chr(92) + "t"),
+    ("\r", chr(92) + "r"),
+    ("\v", chr(92) + "v"),
+    ("\f", chr(92) + "f"),
+    ("\a", chr(92) + "a"),
+    ("\b", chr(92) + "b"),
 )
+_UNESCAPES = {escaped[1]: plain for plain, escaped in _ESCAPES}
 _FLAG_LINE = re.compile(r"^#,\s*(.*)$")
 
 
@@ -56,7 +70,7 @@ def unescape(value: str) -> str:
         char = value[i]
         if char == chr(92) and i + 1 < len(value):
             nxt = value[i + 1]
-            out.append({"n": "\n", "t": "\t", '"': '"', chr(92): chr(92)}.get(nxt, nxt))
+            out.append(_UNESCAPES.get(nxt, nxt))
             i += 2
             continue
         out.append(char)

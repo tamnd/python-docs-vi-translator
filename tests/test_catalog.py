@@ -74,6 +74,11 @@ class TestEscaping:
     def test_round_trips_for_arbitrary_text(self, value: str) -> None:
         assert unescape(escape(value)) == value
 
+    @pytest.mark.parametrize("char", ["\r", "\v", "\f", "\a", "\b"])
+    def test_control_characters_are_escaped_rather_than_written_raw(self, char: str) -> None:
+        """Left raw, ``textwrap`` turns each of these into a space and loses it."""
+        assert char not in escape(f"before{char}after")
+
 
 class TestRenderField:
     def test_short_values_stay_on_one_line(self) -> None:
