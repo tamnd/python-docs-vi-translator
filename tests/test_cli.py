@@ -15,7 +15,7 @@ from typer.testing import CliRunner
 
 import pydocvi
 from conftest import FAKE_KEY, FakeRunner
-from pydocvi import __version__, fleet, glossary, mine
+from pydocvi import __version__, config, fleet, glossary, mine
 from pydocvi.catalog import segment_id
 from pydocvi.cli import ExitCode, app, main
 from pydocvi.client import Answer
@@ -565,12 +565,17 @@ class TestGlossaryCheck:
         assert "G05" in result.stdout
 
     def test_a_missing_glossary_names_the_path(self, content: Path) -> None:
-        """The newlines come out because the console wraps a long path, and a
-        temporary directory is long enough to wrap on some runners and not
-        others. The message is what matters, not where the width broke it."""
+        """Neither the separator nor the wrapping is part of the message.
+
+        A temporary directory is long enough that the console wraps the path on
+        some runners and not others, and Windows writes the separator the other
+        way round. Both of those failed this assertion while the command was
+        doing exactly the right thing.
+        """
         result = runner.invoke(app, ["glossary", "check"])
         assert result.exit_code == ExitCode.CHECK_FAILED
-        assert "manifests/glossary.yaml" in result.stdout.replace("\n", "")
+        printed = result.stdout.replace("\n", "").replace("\\", "/")
+        assert str(config.paths().glossary).replace("\\", "/") in printed
 
 
 class TestGlossaryShow:
