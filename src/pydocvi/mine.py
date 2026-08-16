@@ -56,7 +56,17 @@ STOPWORDS = frozenset(_STOPWORDS.split())
 
 #: A word, for the purposes of counting phrases. Letters only, so version
 #: numbers, hex constants and ``__init__`` never reach the counter.
-_WORD = re.compile(r"[A-Za-z][A-Za-z-]*")
+#:
+#: The apostrophes are in here because they were missing. Without them the
+#: first real run over the corpus split every contraction in two and proposed
+#: both halves: ``doesn`` and ``doesn t`` each 550 times, ``don`` 606, ``isn``
+#: 260, ``python s`` 400. Both the straight and the typographic form are
+#: allowed, because the corpus contains both.
+_WORD = re.compile("[A-Za-z][A-Za-z'\\u2019-]*")
+
+#: A phrase carrying one of these is a contraction or a possessive, which is
+#: prose wearing a term's clothes.
+_APOSTROPHE = re.compile("['\\u2019]")
 
 #: Sentence-final punctuation. A ``msgid`` carrying one is prose.
 _SENTENCE = re.compile(r"[.!?:;]\s*$")
@@ -240,6 +250,10 @@ def from_frequency(
     Phrases are one to three words with no stopword at either end. That is not a
     noun-phrase grammar and does not claim to be. It is the cheapest filter that
     keeps "context manager" and drops "of the".
+
+    A phrase carrying an apostrophe is dropped rather than asked about. Every
+    one of them is a contraction or a possessive, and asking a model to render
+    "python's" wastes a line and gets an answer that cannot be a glossary row.
     """
     counts: dict[str, int] = {}
     for msgid in msgids:
@@ -249,7 +263,7 @@ def from_frequency(
         (
             (phrase, count)
             for phrase, count in counts.items()
-            if count >= minimum and substantial(phrase)
+            if count >= minimum and substantial(phrase) and not _APOSTROPHE.search(phrase)
         ),
         key=lambda pair: (-pair[1], pair[0]),
     )

@@ -459,3 +459,31 @@ class TestSubstance:
 
     def test_a_letter_inside_a_phrase_does_not_condemn_the_phrase(self):
         assert mine.term_like("a keyword")
+
+
+class TestContractions:
+    """Apostrophes, found by reading what the first real run declined."""
+
+    def test_a_contraction_is_one_word_rather_than_two(self):
+        """``doesn`` and ``doesn t`` both came back at count 550 from the real
+        corpus, which is one contraction counted twice as two non-words."""
+        found = {one.en for one in mine.from_frequency(["it doesn't work"] * 10, minimum=8)}
+        assert "doesn" not in found and "doesn t" not in found
+
+    def test_a_possessive_is_not_proposed(self):
+        found = {one.en for one in mine.from_frequency(["python's module"] * 10, minimum=8)}
+        assert "python s" not in found
+
+    def test_the_typographic_apostrophe_is_handled_too(self):
+        found = {one.en for one in mine.from_frequency(["it doesn\u2019t work"] * 10, minimum=8)}
+        assert not any("doesn" in one for one in found)
+
+    def test_the_words_around_a_contraction_still_count(self):
+        found = {
+            one.en for one in mine.from_frequency(["it doesn't break parsing"] * 10, minimum=8)
+        }
+        assert "parsing" in found
+
+    def test_a_plain_phrase_is_untouched(self):
+        found = {one.en for one in mine.from_frequency(["the context manager"] * 10, minimum=8)}
+        assert "context manager" in found
