@@ -1,0 +1,438 @@
+"""Where candidate terms come from.
+
+Four sources, in descending order of trust, and the order is the whole design.
+What the humans already rendered beats what CPython's own glossary page calls a
+term, which beats what is common, which beats what the previous pipeline
+rendered three different ways.
+
+Nothing here decides anything. Mining produces
+``manifests/glossary-candidates.yaml`` and a candidate is a question, not a row.
+The answering happens in :mod:`pydocvi.curate` and then in front of a person.
+"""
+
+import re
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, replace
+from enum import IntEnum
+
+from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
+
+from pydocvi.catalog import Catalog, Entry
+from pydocvi.glossary import scalar
+from pydocvi.memory import Memory
+from pydocvi.segment import strip_markup
+
+#: How many frequency candidates to keep. The corpus has tens of thousands of
+#: distinct noun phrases and almost all of them are prose.
+FREQUENCY_LIMIT = 800
+
+#: The longest phrase frequency counting will propose. Past three words a
+#: repeated phrase is a sentence fragment rather than a term.
+MAX_WORDS = 3
+
+#: How many times a phrase has to appear before it is worth asking about.
+MIN_COUNT = 8
+
+#: The longest a ``msgid`` can be and still be a term rather than a sentence.
+TERM_CHARACTERS = 48
+
+#: The fewest letters a word may have for a phrase to count as a term. One is a
+#: label on an index page, not something to ask a model to render.
+MIN_LETTERS = 2
+
+#: Words that never begin or end a term. Short on purpose: the list exists to
+#: stop "of the" and "the following" from becoming candidates, not to be a
+#: grammar. Every word wrongly in here is a term the mine will never propose,
+#: and that failure is silent, so the bar for adding one is high.
+_STOPWORDS = """
+a an and any are as at be been by can could do does for from has have if in
+into is it its may must no not of on or should so some such than that the
+their them then there these they this those to use used using was were what
+when where which while will with would you your
+"""
+
+STOPWORDS = frozenset(_STOPWORDS.split())
+
+#: A word, for the purposes of counting phrases. Letters only, so version
+#: numbers, hex constants and ``__init__`` never reach the counter.
+_WORD = re.compile(r"[A-Za-z][A-Za-z-]*")
+
+#: Sentence-final punctuation. A ``msgid`` carrying one is prose.
+_SENTENCE = re.compile(r"[.!?:;]\s*$")
+
+
+class Source(IntEnum):
+    """Where a candidate came from, ordered by how much it is worth.
+
+    An ``IntEnum`` because the order is the point and merging two candidates
+    means keeping the lower number. The values are trust, not sequence: 1 is the
+    1 435 strings people have already translated and 4 is a machine
+    contradicting itself.
+    """
+
+    HUMAN = 1
+    TERM_PAGE = 2
+    FREQUENCY = 3
+    MACHINE = 4
+
+    @property
+    def label(self) -> str:
+        return {
+            Source.HUMAN: "human translation",
+            Source.TERM_PAGE: "glossary.po",
+            Source.FREQUENCY: "corpus frequency",
+            Source.MACHINE: "machine disagreement",
+        }[self]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Candidate:
+    """One English phrase worth asking about, and why.
+
+    ``definition`` is the sentence that goes into the curation prompt beside the
+    term. A term without one is asked about bare, and a model asked to render
+    "annotation" with no context will render the English word rather than the
+    Python concept.
+
+    ``seen`` is every rendering the sources observed. For a human candidate that
+    is evidence and usually the answer. For a machine candidate it is the
+    disagreement that made it a candidate at all.
+    """
+
+    en: str
+    source: Source
+    count: int = 0
+    definition: str = ""
+    seen: tuple[str, ...] = ()
+
+    @property
+    def words(self) -> int:
+        return len(self.en.split())
+
+    @property
+    def contested(self) -> bool:
+        """Whether the sources rendered this more than one way."""
+        return len(set(self.seen)) > 1
+
+
+def term_like(msgid: str) -> bool:
+    """Whether a ``msgid`` is a term rather than a sentence about one.
+
+    Headings, index entries and glossary keys are terms. Anything with
+    sentence-final punctuation, more than three words or more than
+    :data:`TERM_CHARACTERS` characters is prose, and prose aligned against its
+    own translation is a sentence pair rather than a term pair.
+    """
+    prose = strip_markup(msgid).strip()
+    if not prose or _SENTENCE.search(prose):
+        return False
+    if len(prose) > TERM_CHARACTERS or len(prose.split()) > MAX_WORDS:
+        return False
+    return substantial(prose)
+
+
+def substantial(text: str) -> bool:
+    """Whether a phrase has a word in it, as opposed to a letter.
+
+    Found by running this over the real corpus. The alphabet headings on
+    CPython's glossary index page are ``**A**`` through ``**Z**``, they are
+    short, they carry no sentence punctuation and they survived every other
+    filter, so 19 of the 102 highest-trust candidates were single letters. The
+    frequency source produced another 21 the same way.
+
+    ``MIN_LETTERS`` rather than a ratio of letters to punctuation, because
+    ``# (hash)`` is a real glossary entry and a ratio would have to refuse it to
+    refuse ``**A**``.
+    """
+    return any(len(word.group(0)) >= MIN_LETTERS for word in _WORD.finditer(text))
+
+
+def from_human(memory: Memory) -> list[Candidate]:
+    """Terms the 1 435 human translations already decided.
+
+    The highest-value source and the smallest, which is why ``sync --human``
+    runs before mining rather than after.
+
+    Alignment is only attempted where it is free: a short entry with no sentence
+    punctuation is one term, and its ``msgstr`` is that term's rendering. Longer
+    entries are left alone. A word aligner over 1 435 sentence pairs would
+    propose renderings nobody wrote, and a candidate list nobody trusts gets
+    read once.
+
+    The memory holds one rendering per ``msgid`` and ``msgctxt``, so a candidate
+    from here is contested only when the same English was rendered two ways
+    under two different contexts. That is rare and it is exactly the case worth
+    seeing, because it is a person having decided the term needs a ``context``
+    row without there being one.
+    """
+    seen: dict[str, list[str]] = {}
+    for segment in memory:
+        if segment.source != "human" or not segment.msgstr.strip():
+            continue
+        if term_like(segment.msgid):
+            seen.setdefault(strip_markup(segment.msgid).strip(), []).append(segment.msgstr.strip())
+    return [
+        Candidate(en=en, source=Source.HUMAN, count=len(renderings), seen=tuple(renderings))
+        for en, renderings in sorted(seen.items())
+    ]
+
+
+def from_term_page(catalog: Catalog) -> list[Candidate]:
+    """Terms from ``glossary.po``, with the definition that follows each one.
+
+    CPython's glossary page is 18 000 words defining exactly the terms this
+    project needs. The page's structure survives into the catalog as an
+    alternation: a short entry naming a term, then one or more longer entries
+    defining it. That alternation is what is read here, and the first definition
+    paragraph is kept as the context the curation prompt needs.
+    """
+    out: list[Candidate] = []
+    entries = list(catalog)
+    for index, entry in enumerate(entries):
+        if not term_like(entry.msgid) or _is_code(entry.msgid):
+            continue
+        definition = _definition(entries[index + 1 :])
+        if definition is None:
+            continue
+        out.append(
+            Candidate(
+                en=strip_markup(entry.msgid).strip(),
+                source=Source.TERM_PAGE,
+                definition=definition,
+            )
+        )
+    return out
+
+
+def _is_code(msgid: str) -> bool:
+    """Whether the entry is nothing but markup.
+
+    ``>>>`` and ``...`` are glossary keys on the page and neither is a term
+    anybody translates.
+    """
+    return not strip_markup(msgid).strip(" .>")
+
+
+def _definition(rest: Sequence[Entry]) -> str | None:
+    """The first sentence of the paragraph following a term, or nothing."""
+    for entry in rest:
+        prose = " ".join(strip_markup(entry.msgid).split())
+        if not prose:
+            continue
+        if term_like(entry.msgid):
+            return None
+        sentence, _, _ = prose.partition(". ")
+        return sentence.strip().rstrip(".") + "."
+    return None
+
+
+def from_frequency(
+    msgids: Iterable[str], *, limit: int = FREQUENCY_LIMIT, minimum: int = MIN_COUNT
+) -> list[Candidate]:
+    """The most frequent noun phrases in the corpus, markup excluded.
+
+    Excluded rather than merely ignored. A phrase that only ever appears inside
+    a double-backtick span is code, and code is what the protector already took
+    out, so counting over the stripped text is the same operation the prompt
+    builder does and needs no second definition of what a span is.
+
+    Phrases are one to three words with no stopword at either end. That is not a
+    noun-phrase grammar and does not claim to be. It is the cheapest filter that
+    keeps "context manager" and drops "of the".
+    """
+    counts: dict[str, int] = {}
+    for msgid in msgids:
+        for phrase, count in _phrases(strip_markup(msgid)).items():
+            counts[phrase] = counts.get(phrase, 0) + count
+    ranked = sorted(
+        (
+            (phrase, count)
+            for phrase, count in counts.items()
+            if count >= minimum and substantial(phrase)
+        ),
+        key=lambda pair: (-pair[1], pair[0]),
+    )
+    return [
+        Candidate(en=phrase, source=Source.FREQUENCY, count=count)
+        for phrase, count in ranked[:limit]
+    ]
+
+
+def _phrases(text: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for run in _runs(text):
+        for size in range(1, MAX_WORDS + 1):
+            for start in range(len(run) - size + 1):
+                window = run[start : start + size]
+                if window[0] in STOPWORDS or window[-1] in STOPWORDS:
+                    continue
+                phrase = " ".join(window)
+                counts[phrase] = counts.get(phrase, 0) + 1
+    return counts
+
+
+def _runs(text: str) -> list[list[str]]:
+    """Words grouped by the punctuation between them.
+
+    Phrases never cross a comma or a full stop, because "the module, function"
+    is two things and counting it as one produces candidates that read like
+    somebody transcribed a list wrongly.
+    """
+    return [
+        [word.group(0).lower() for word in _WORD.finditer(clause)]
+        for clause in re.split(r"[^A-Za-z-]*[,.;:()\[\]]+[^A-Za-z-]*|\n", text)
+        if clause
+    ]
+
+
+def from_machine(catalogs: Iterable[Catalog]) -> list[Candidate]:
+    """Terms the previous pipeline rendered inconsistently.
+
+    Where Google rendered the same English three different ways across three
+    files, that phrase is a candidate *because* it was inconsistent.
+    Disagreement is a signal, and it is the only signal in this module that
+    points at a term the other three sources have no reason to notice.
+
+    Agreement is not a signal, so a phrase rendered the same way everywhere is
+    not proposed here. It may still arrive from frequency, which is the right
+    outcome: it is a candidate on its merits rather than on a machine having
+    been consistent.
+    """
+    seen: dict[str, list[str]] = {}
+    for catalog in catalogs:
+        for entry in catalog:
+            if not entry.msgstr.strip() or not term_like(entry.msgid):
+                continue
+            renderings = seen.setdefault(strip_markup(entry.msgid).strip(), [])
+            renderings.append(entry.msgstr.strip())
+    return [
+        Candidate(
+            en=en, source=Source.MACHINE, count=len(renderings), seen=tuple(sorted(set(renderings)))
+        )
+        for en, renderings in sorted(seen.items())
+        if len(set(renderings)) > 1
+    ]
+
+
+def merge(*groups: Iterable[Candidate]) -> list[Candidate]:
+    """One list, each phrase once, attributed to its most trusted source.
+
+    Counts are summed and renderings are unioned across sources, because a
+    phrase that is both frequent and rendered two ways by the old pipeline is
+    more interesting than either fact alone. The definition is kept from
+    whichever source had one, since only ``glossary.po`` ever does.
+
+    The result is sorted by trust and then alphabetically, never by count.
+    Sorting a candidate list by count puts "the following example" above
+    "context manager", and the list is read from the top.
+    """
+    merged: dict[str, Candidate] = {}
+    for group in groups:
+        for candidate in group:
+            existing = merged.get(candidate.en)
+            merged[candidate.en] = candidate if existing is None else _combine(existing, candidate)
+    return sorted(merged.values(), key=lambda candidate: (candidate.source, candidate.en))
+
+
+def _combine(left: Candidate, right: Candidate) -> Candidate:
+    best, other = (left, right) if left.source <= right.source else (right, left)
+    return replace(
+        best,
+        count=left.count + right.count,
+        definition=best.definition or other.definition,
+        seen=tuple(sorted(set(left.seen) | set(right.seen))),
+    )
+
+
+def dumps(candidates: Sequence[Candidate]) -> str:
+    """Write ``manifests/glossary-candidates.yaml``.
+
+    Hand-rolled for the same reason the glossary itself is: this file is read in
+    a diff between one mining run and the next, and a key that moves makes that
+    diff useless.
+    """
+    out = [
+        "# Written by pydocvi glossary mine. Candidates are questions, not rows.",
+        f"# {len(candidates)} candidate(s), most trusted source first.",
+        "candidates:",
+    ]
+    for candidate in candidates:
+        out.append(f"  - en: {scalar(candidate.en)}")
+        out.append(f"    source: {candidate.source.name.lower()}")
+        out.append(f"    count: {candidate.count}")
+        if candidate.definition:
+            out.append(f"    definition: {scalar(candidate.definition)}")
+        if candidate.seen:
+            out.append("    seen:")
+            out.extend(f"      - {scalar(rendering)}" for rendering in candidate.seen)
+    return "\n".join(out) + "\n"
+
+
+class MineError(ValueError):
+    """A candidates file this module cannot read."""
+
+
+def loads(text: str) -> list[Candidate]:
+    """Read back what ``dumps`` wrote.
+
+    Read back rather than kept in memory because a person edits this file
+    between mining and curating, and the edited file is the one that should be
+    asked about.
+    """
+    yaml = YAML(typ="safe")
+    try:
+        payload = yaml.load(text)
+    except YAMLError as error:
+        raise MineError(f"not valid YAML: {error}") from error
+    if not isinstance(payload, dict):
+        raise MineError("expected a mapping at the top level")
+    raw = payload.get("candidates")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise MineError("candidates must be a list")
+    return [_candidate(one, at) for at, one in enumerate(raw, start=1)]
+
+
+def _candidate(raw: object, at: int) -> Candidate:
+    if not isinstance(raw, dict):
+        raise MineError(f"candidate {at} is not a mapping")
+    unknown = set(raw) - {"en", "source", "count", "definition", "seen"}
+    if unknown:
+        raise MineError(f"candidate {at} has unknown fields: {', '.join(sorted(unknown))}")
+    name = str(raw.get("source", "")).upper()
+    if name not in Source.__members__:
+        raise MineError(f"candidate {at} has unknown source {name.lower()!r}")
+    seen = raw.get("seen") or []
+    if not isinstance(seen, list):
+        raise MineError(f"candidate {at} has a non-list seen")
+    return Candidate(
+        en=str(raw.get("en", "")),
+        source=Source[name],
+        count=int(raw.get("count", 0)),
+        definition=str(raw.get("definition", "")),
+        seen=tuple(str(one) for one in seen),
+    )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Stats:
+    """What ``glossary mine`` prints when it finishes."""
+
+    total: int
+    by_source: dict[str, int]
+    defined: int
+    contested: int
+
+
+def stats(candidates: Sequence[Candidate]) -> Stats:
+    by_source: dict[str, int] = {}
+    for candidate in candidates:
+        by_source[candidate.source.label] = by_source.get(candidate.source.label, 0) + 1
+    return Stats(
+        total=len(candidates),
+        by_source=by_source,
+        defined=sum(1 for candidate in candidates if candidate.definition),
+        contested=sum(1 for candidate in candidates if candidate.contested),
+    )

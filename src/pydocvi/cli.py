@@ -15,7 +15,19 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from pydocvi import __version__, batch, classify, config, fleet, queue, routes, sync
+from pydocvi import (
+    __version__,
+    batch,
+    classify,
+    config,
+    curate,
+    fleet,
+    glossary,
+    mine,
+    queue,
+    routes,
+    sync,
+)
 from pydocvi.catalog import Catalog
 from pydocvi.client import Client
 from pydocvi.logs import configure_logging
@@ -33,6 +45,8 @@ fleet_app = typer.Typer(help="Tunnels, probes and traces.", no_args_is_help=True
 app.add_typer(fleet_app, name="fleet")
 queue_app = typer.Typer(help="Inspect and repair the work queue.", no_args_is_help=True)
 app.add_typer(queue_app, name="queue")
+glossary_app = typer.Typer(help="Mine, curate and version the terminology.", no_args_is_help=True)
+app.add_typer(glossary_app, name="glossary")
 
 console = Console()
 
@@ -494,6 +508,261 @@ def tm_show(segment: str) -> None:
         console.print(f"[red]no segment {segment}[/red]")
         raise typer.Exit(ExitCode.CHECK_FAILED)
     console.print(found)
+
+
+@glossary_app.command("mine")
+def glossary_mine(
+    limit: Annotated[
+        int, typer.Option(help="How many frequent phrases to take.")
+    ] = mine.FREQUENCY_LIMIT,
+    minimum: Annotated[
+        int, typer.Option(help="Fewest occurrences a phrase may have.")
+    ] = mine.MIN_COUNT,
+) -> None:
+    """Propose candidate terms from the four sources.
+
+    The sources are read in descending order of trust and a candidate found
+    twice keeps the more trusted of the two. Frequency is deliberately last: the
+    most common noun phrase in this corpus is "the following example".
+    """
+    where = config.paths()
+    corpus = _corpus(where.upstream)
+    memory = Memory.load(where.memory) if where.memory.exists() else Memory()
+    page = next((one for one in corpus if one.path.name == "glossary.po"), None)
+
+    found = mine.merge(
+        mine.from_human(memory),
+        mine.from_term_page(page) if page is not None else [],
+        mine.from_frequency(
+            [entry.msgid for one in corpus for entry in one], limit=limit, minimum=minimum
+        ),
+        mine.from_machine(_machine(where.content)),
+    )
+
+    measured = mine.stats(found)
+    table = Table(box=None)
+    table.add_column("source")
+    table.add_column("candidates", justify="right")
+    for source, count in measured.by_source.items():
+        table.add_row(source, f"{count:,}")
+    table.add_row("[bold]total", f"[bold]{measured.total:,}")
+    console.print(table)
+    console.print(f"{measured.contested:,} of them rendered more than one way already")
+
+    where.candidates.parent.mkdir(parents=True, exist_ok=True)
+    where.candidates.write_text(mine.dumps(found), encoding="utf-8")
+    console.print(f"wrote {where.candidates}")
+
+
+def _machine(content: Path) -> list[Catalog]:
+    """The already-translated tree, or nothing if it is not checked out yet."""
+    return sync.read_corpus(content) if content.exists() else []
+
+
+@glossary_app.command("curate")
+def glossary_curate(
+    size: Annotated[int, typer.Option("--batch", help="Candidates per call.")] = curate.BATCH_SIZE,
+    take: Annotated[int, typer.Option(help="Curate only the first N candidates, 0 for all.")] = 0,
+    yes: Annotated[bool, typer.Option("--yes", help="Skip the confirmation.")] = False,
+) -> None:
+    """Ask the fleet for a rendering of every candidate, and refuse most answers.
+
+    Writes the accepted rows to the proposal file for a person to read. Nothing
+    here touches ``glossary.yaml``: promoting is ``glossary bump`` and it is a
+    separate command because a curated row is a suggestion until somebody has
+    agreed with it.
+    """
+    where = config.paths()
+    if not where.candidates.exists():
+        console.print(f"[red]no candidates at {where.candidates}, run glossary mine[/red]")
+        raise typer.Exit(ExitCode.CHECK_FAILED)
+
+    found = mine.loads(where.candidates.read_text(encoding="utf-8"))
+    if take:
+        found = found[:take]
+    made = curate.batches(found, size=size)
+    if not made:
+        console.print("nothing to curate")
+        return
+
+    known = _routes()
+    if not yes:
+        typer.confirm(f"{len(made)} calls about {len(found):,} terms, continue?", abort=True)
+
+    started = time.monotonic()
+    replies = asyncio.run(_curate(known, made))
+    outcome = curate.collect(replies)
+    elapsed = time.monotonic() - started
+
+    console.print(
+        f"{len(outcome.accepted):,} accepted, {len(outcome.declined):,} declined, "
+        f"{len(outcome.dropped):,} dropped, in {elapsed:.0f}s"
+    )
+    if outcome.by_rule:
+        table = Table(box=None)
+        table.add_column("rule")
+        table.add_column("dropped", justify="right")
+        for rule, count in outcome.by_rule.items():
+            table.add_row(rule, f"{count:,}")
+        console.print(table)
+
+    proposed = glossary.Glossary(version=0).with_terms(
+        glossary.match_order(outcome.accepted), version=0
+    )
+    where.proposal.parent.mkdir(parents=True, exist_ok=True)
+    glossary.save(proposed, where.proposal)
+    console.print(f"wrote {where.proposal}")
+
+    where.reports.mkdir(parents=True, exist_ok=True)
+    report = where.reports / "glossary-curation.md"
+    report.write_text(curate.report(outcome, prompt=curate.prompt_id()), encoding="utf-8")
+    console.print(f"wrote {report}")
+
+
+async def _curate(known: list[routes.Route], made: list[curate.Batch]) -> list[curate.Reply]:
+    done = 0
+
+    def tick(reply: curate.Reply) -> None:
+        nonlocal done
+        done += 1
+        console.print(
+            f"[{done}/{len(made)}] batch {reply.index}: {len(reply.accepted)} accepted, "
+            f"{len(reply.declined)} declined, {len(reply.dropped)} dropped"
+        )
+
+    async with Client() as client:
+        return await curate.ask(client, known, made, on_reply=tick)
+
+
+@glossary_app.command("check")
+def glossary_check(
+    path: Annotated[Path | None, typer.Option(help="Check a file other than the glossary.")] = None,
+) -> None:
+    """Run ``G-e`` and ``G-f`` over the list, and ``G05`` over the Markdown."""
+    where = config.paths()
+    target = path or where.glossary
+    if not target.exists():
+        console.print(f"[red]no glossary at {target}[/red]")
+        raise typer.Exit(ExitCode.CHECK_FAILED)
+
+    terms = glossary.load(target)
+    problems = glossary.check(terms)
+    if where.glossary_markdown.exists() and path is None:
+        problems += glossary.agrees(where.glossary_markdown.read_text(encoding="utf-8"), terms)
+
+    for problem in problems:
+        console.print(f"[red]{problem.rule}[/red] {problem.en}: {problem.detail}")
+    measured = glossary.stats(terms)
+    console.print(
+        f"{measured.terms:,} terms, {measured.kept:,} keep-English, "
+        f"{measured.contextual:,} contextual, version {terms.version}"
+    )
+    if problems:
+        console.print(f"[red]{len(problems)} problems[/red]")
+        raise typer.Exit(ExitCode.CHECK_FAILED)
+
+
+@glossary_app.command("diff")
+def glossary_diff(
+    old: Annotated[int, typer.Argument(help="The older version.")],
+    new: Annotated[int, typer.Argument(help="The newer version.")],
+) -> None:
+    """Print what moved between two versions.
+
+    This is what makes terminology revisable. ``stale --glossary`` intersects
+    these terms with the memory and re-queues the few hundred entries that
+    contain one, rather than the corpus.
+    """
+    before, after = _version(old), _version(new)
+    moved = glossary.diff(before, after)
+    for term in moved.added:
+        console.print(f"[green]+ {term.en}[/green] {term.rendering}")
+    for term in moved.removed:
+        console.print(f"[red]- {term.en}[/red] {term.rendering}")
+    for was, now in moved.changed:
+        console.print(f"[yellow]~ {now.en}[/yellow] {was.rendering} -> {now.rendering}")
+    console.print(f"{len(moved.terms):,} terms moved between v{old} and v{new}")
+
+
+def _version(number: int) -> glossary.Glossary:
+    """One archived version, or an exit naming the file it wanted."""
+    where = config.paths()
+    if number == glossary.load(where.glossary).version and where.glossary.exists():
+        return glossary.load(where.glossary)
+    path = where.versions / f"v{number}.yaml"
+    if not path.exists():
+        console.print(f"[red]no archived version {number} at {path}[/red]")
+        raise typer.Exit(ExitCode.CHECK_FAILED)
+    return glossary.load(path)
+
+
+@glossary_app.command("show")
+def glossary_show(
+    term: Annotated[str | None, typer.Argument(help="One term, or all of them.")] = None,
+) -> None:
+    """Print the glossary, or one row of it."""
+    terms = glossary.load(config.paths().glossary)
+    if term is not None:
+        found = terms.get(term)
+        if found is None:
+            console.print(f"[red]no term {term!r}[/red]")
+            raise typer.Exit(ExitCode.CHECK_FAILED)
+        console.print(found)
+        return
+    console.print(glossary.table(terms))
+
+
+@glossary_app.command("bump")
+def glossary_bump(
+    yes: Annotated[bool, typer.Option("--yes", help="Skip the confirmation.")] = False,
+) -> None:
+    """Promote the reviewed proposal, raise the version, regenerate the Markdown.
+
+    The old version is archived first. Without that ``glossary diff 6 7`` has
+    only one side and a version bump becomes a re-queue of everything, which is
+    the failure that makes people stop bumping.
+    """
+    where = config.paths()
+    if not where.proposal.exists():
+        console.print(f"[red]no proposal at {where.proposal}, run glossary curate[/red]")
+        raise typer.Exit(ExitCode.CHECK_FAILED)
+
+    current = (
+        glossary.load(where.glossary) if where.glossary.exists() else glossary.Glossary(version=0)
+    )
+    proposed = glossary.load(where.proposal)
+    merged = current.with_terms(
+        glossary.match_order({term.en: term for term in [*current.terms, *proposed.terms]}.values())
+    )
+    if merged.version == current.version:
+        console.print("nothing to promote")
+        return
+
+    problems = glossary.check(merged)
+    for problem in problems:
+        console.print(f"[red]{problem.rule}[/red] {problem.en}: {problem.detail}")
+    if problems:
+        raise typer.Exit(ExitCode.CHECK_FAILED)
+
+    moved = glossary.diff(current, merged)
+    if not yes:
+        typer.confirm(
+            f"v{current.version} -> v{merged.version}, {len(moved.terms):,} terms move, continue?",
+            abort=True,
+        )
+
+    if where.glossary.exists():
+        where.versions.mkdir(parents=True, exist_ok=True)
+        glossary.save(current, where.versions / f"v{current.version}.yaml")
+    where.glossary.parent.mkdir(parents=True, exist_ok=True)
+    glossary.save(merged, where.glossary)
+    console.print(f"wrote {where.glossary} at v{merged.version}")
+
+    if where.glossary_markdown.exists():
+        markdown = where.glossary_markdown.read_text(encoding="utf-8")
+        where.glossary_markdown.write_text(glossary.render(markdown, merged), encoding="utf-8")
+        console.print(f"regenerated the table in {where.glossary_markdown}")
+    where.proposal.unlink()
 
 
 def main() -> NoReturn:

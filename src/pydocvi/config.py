@@ -48,6 +48,39 @@ class Paths:
     def queue(self) -> Path:
         return self.work / "queue"
 
+    @property
+    def glossary(self) -> Path:
+        """The machine-readable terminology contract.
+
+        On the content repo rather than under ``work`` because it is reviewed,
+        committed and cited in every prompt. Run state is disposable and this is
+        not.
+        """
+        return self.content / "manifests" / "glossary.yaml"
+
+    @property
+    def candidates(self) -> Path:
+        return self.content / "manifests" / "glossary-candidates.yaml"
+
+    @property
+    def proposal(self) -> Path:
+        """What curation produced, before a person has read it.
+
+        A separate file from both the candidates and the glossary, because the
+        human pass happens here and neither overwriting the mining output nor
+        writing unreviewed rows into the contract is acceptable.
+        """
+        return self.content / "manifests" / "glossary-proposed.yaml"
+
+    @property
+    def versions(self) -> Path:
+        """One file per past version, so ``glossary diff 6 7`` has two sides."""
+        return self.content / "manifests" / "glossary"
+
+    @property
+    def glossary_markdown(self) -> Path:
+        return self.content / "GLOSSARY.md"
+
 
 def _env_path(name: str, default: Path) -> Path:
     raw = os.environ.get(f"{ENV_PREFIX}{name}")
