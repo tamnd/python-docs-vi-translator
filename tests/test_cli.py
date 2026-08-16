@@ -251,10 +251,13 @@ class TestFleetCommands:
         assert runner.invoke(app, ["fleet", "probe"]).exit_code == ExitCode.FLEET_UNREACHABLE
 
     def test_a_missing_route_file_names_the_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("PYDOCVI_ROUTES", "/nonexistent/routes.json")
+        """Named because the commonest cause is looking in the wrong place, and
+        the path is written in the platform's own separators."""
+        absent = Path("/nonexistent/routes.json")
+        monkeypatch.setenv("PYDOCVI_ROUTES", str(absent))
         result = runner.invoke(app, ["fleet", "status"])
         assert result.exit_code == ExitCode.FLEET_UNREACHABLE
-        assert "/nonexistent/routes.json" in result.stdout
+        assert str(absent) in result.stdout
 
     def test_trace_prints_the_prompt_and_reply(
         self, route_file: Path, commands: FakeRunner
