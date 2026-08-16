@@ -70,6 +70,7 @@ make lint     # ruff check
 make type     # mypy --strict src/
 make test     # pytest
 make cover    # pytest with the coverage floor
+make secrets  # refuse to ship anything key-shaped
 make build    # uv build
 ```
 
@@ -78,6 +79,14 @@ Python 3.14 is the floor. There is no `from __future__ import annotations` in th
 `invariants.py`, `segment.py`, `classify.py` and `parse.py` are pure functions over strings with no I/O, they are covered at 100 %, and they carry property tests. Those four decide what 87 008 entries look like.
 
 Tests marked `corpus` need a local checkout of the upstream repo and skip cleanly without one. Tests marked `fleet` need a live endpoint and never run in CI.
+
+Nothing in the test suite opens a socket, starts a tunnel or sleeps. Time is a protocol with a fake that advances only when something waits on it, subprocesses go through a runner protocol with canned answers, and the HTTP client takes a transport. That is what makes it possible to test a five-minute cooldown doubling to an hour, and a lease expiring thirty minutes after a worker was killed, in a suite that finishes in seconds.
+
+## On keys
+
+No key is ever written in a file. Routes name an environment variable and the value is read at call time, so a key never sits in a long-lived object that something might print. Anything key-shaped is stripped from every trace and every error before it reaches a terminal, because a trace is the thing a person pastes into an issue. `make secrets` runs in CI and refuses any tracked file containing a key-shaped string, with no allowlist: the test fixtures assemble their fake key at import rather than spelling it out.
+
+The route file lives in the user's config directory, never in a checkout, and holds no key of its own.
 
 ## On PEP 545
 
