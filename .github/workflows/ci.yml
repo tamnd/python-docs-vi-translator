@@ -33,6 +33,17 @@ jobs:
       - name: mypy
         run: uv run mypy --strict src/
 
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The keys in this project are shared across hosts, so one of them in one
+      # commit is one of them everywhere, and rewriting history does not unpublish
+      # anything. Cheaper to refuse the commit.
+      - name: no key-shaped string and no route file is tracked
+        run: make secrets
+
   test:
     name: test (${{ matrix.os }}, ${{ matrix.python }})
     runs-on: ${{ matrix.os }}

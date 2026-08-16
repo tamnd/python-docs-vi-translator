@@ -44,6 +44,10 @@ class Paths:
     def reports(self) -> Path:
         return self.work / "reports"
 
+    @property
+    def queue(self) -> Path:
+        return self.work / "queue"
+
 
 def _env_path(name: str, default: Path) -> Path:
     raw = os.environ.get(f"{ENV_PREFIX}{name}")

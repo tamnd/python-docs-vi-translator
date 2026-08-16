@@ -1,16 +1,22 @@
 import importlib
+import json
+import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
 import pydocvi
-from pydocvi import __version__
+from conftest import FAKE_KEY, FakeRunner
+from pydocvi import __version__, fleet
 from pydocvi.catalog import segment_id
 from pydocvi.cli import ExitCode, app, main
+from pydocvi.fleet import Ran
+from pydocvi.queue import Job, Queue, Stage, State
 
 runner = CliRunner()
 
@@ -174,6 +180,209 @@ class TestBatch:
     ) -> None:
         monkeypatch.setenv("PYDOCVI_UPSTREAM", str(tmp_path / "absent"))
         assert runner.invoke(app, ["batch"]).exit_code == ExitCode.CHECK_FAILED
+
+
+@pytest.fixture
+def route_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A route file with the shape of a real one and none of its addresses.
+
+    Pointed at by the environment, because the real one lives in the user's
+    config directory and is never part of a checkout.
+    """
+    target = tmp_path / "routes.json"
+    target.write_text(
+        json.dumps(
+            {
+                "routes": [
+                    {
+                        "name": "a",
+                        "base_url": "http://127.0.0.1:8103/v1",
+                        "model": "gpt-5",
+                        "host": "a",
+                        "local_port": 8103,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PYDOCVI_ROUTES", str(target))
+    monkeypatch.setenv("CHATGPT_PROXY_KEY", FAKE_KEY)
+    return target
+
+
+@pytest.fixture
+def commands(monkeypatch: pytest.MonkeyPatch) -> FakeRunner:
+    """Every subprocess the fleet would run, answered from a dictionary."""
+    fake = FakeRunner({})
+    monkeypatch.setattr(fleet, "Subprocess", lambda: fake)
+    return fake
+
+
+class TestFleetCommands:
+    def test_status_lists_every_route(self, route_file: Path, commands: FakeRunner) -> None:
+        result = runner.invoke(app, ["fleet", "status"])
+        assert result.exit_code == ExitCode.OK
+        assert "127.0.0.1:8103" in result.stdout
+
+    def test_up_opens_a_forward(self, route_file: Path, commands: FakeRunner) -> None:
+        commands.answers = {"lsof": Ran(code=1)}
+        assert runner.invoke(app, ["fleet", "up"]).exit_code == ExitCode.OK
+        assert commands.ran("ExitOnForwardFailure=yes")
+
+    def test_up_failing_is_exit_three(self, route_file: Path, commands: FakeRunner) -> None:
+        """Exit 3 is what the runbook keys on, so a tunnel that did not open has
+        to stop the script rather than let a nine-hour run start."""
+        commands.answers = {"lsof": Ran(code=1), "ssh": Ran(code=255, err="denied")}
+        result = runner.invoke(app, ["fleet", "up"])
+        assert result.exit_code == ExitCode.FLEET_UNREACHABLE
+        assert "denied" in result.stdout
+
+    def test_down_closes_what_is_open(self, route_file: Path, commands: FakeRunner) -> None:
+        commands.answers = {"lsof": Ran(code=0, out="4242")}
+        result = runner.invoke(app, ["fleet", "down"])
+        assert result.exit_code == ExitCode.OK
+        assert commands.ran("kill 4242")
+
+    def test_probe_with_nothing_answering_is_exit_three(
+        self, route_file: Path, commands: FakeRunner
+    ) -> None:
+        commands.answers = {"curl": Ran(code=0, out="000")}
+        assert runner.invoke(app, ["fleet", "probe"]).exit_code == ExitCode.FLEET_UNREACHABLE
+
+    def test_a_missing_route_file_names_the_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PYDOCVI_ROUTES", "/nonexistent/routes.json")
+        result = runner.invoke(app, ["fleet", "status"])
+        assert result.exit_code == ExitCode.FLEET_UNREACHABLE
+        assert "/nonexistent/routes.json" in result.stdout
+
+    def test_trace_prints_the_prompt_and_reply(
+        self, route_file: Path, commands: FakeRunner
+    ) -> None:
+        commands.answers = {
+            "grep -rl": Ran(code=0, out="/traces/aa.json"),
+            "cat ": Ran(code=0, out="the prompt and the reply"),
+        }
+        result = runner.invoke(app, ["fleet", "trace", "3f2a1c", "--day", "2026-08-15"])
+        assert result.exit_code == ExitCode.OK
+        assert "the prompt and the reply" in result.stdout
+
+    def test_trace_for_a_batch_nobody_has(self, route_file: Path, commands: FakeRunner) -> None:
+        commands.answers = {"grep -rl": Ran(code=0, out="")}
+        result = runner.invoke(app, ["fleet", "trace", "3f2a1c", "--day", "2026-08-15"])
+        assert result.exit_code == ExitCode.CHECK_FAILED
+
+    def test_trace_on_a_route_that_does_not_exist(
+        self, route_file: Path, commands: FakeRunner
+    ) -> None:
+        result = runner.invoke(
+            app, ["fleet", "trace", "3f2a1c", "--day", "2026-08-15", "--route", "nope"]
+        )
+        assert result.exit_code == ExitCode.USAGE
+
+    def test_bench_asks_before_spending_real_calls(
+        self, route_file: Path, commands: FakeRunner
+    ) -> None:
+        """Twenty calls a route is most of an hour of a shared session, so the
+        confirmation is not decoration."""
+        result = runner.invoke(app, ["fleet", "bench"], input="n\n")
+        assert result.exit_code != ExitCode.OK
+
+
+class TestDoctor:
+    def test_a_fleet_that_is_answering_is_exit_zero(
+        self, route_file: Path, commands: FakeRunner
+    ) -> None:
+        commands.answers = {"curl": Ran(code=0, out="200")}
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == ExitCode.OK
+        assert "1 of 1 routes answering" in result.stdout
+
+    def test_a_fleet_that_is_down_is_exit_three(
+        self, route_file: Path, commands: FakeRunner
+    ) -> None:
+        commands.answers = {"curl": Ran(code=7, err="Failed to connect")}
+        assert runner.invoke(app, ["doctor"]).exit_code == ExitCode.FLEET_UNREACHABLE
+
+    def test_a_key_that_is_not_in_the_shell_is_named(
+        self, route_file: Path, commands: FakeRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The commonest way a run fails to start, and the one that used to look
+        like a model problem."""
+        monkeypatch.delenv("CHATGPT_PROXY_KEY")
+        commands.answers = {"curl": Ran(code=0, out="200")}
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == ExitCode.FLEET_UNREACHABLE
+        assert "CHATGPT_PROXY_KEY is not set" in result.stdout
+
+
+class TestQueueCommands:
+    def add_job(self, workspace: Path, **overrides: object) -> Queue:
+        each = Queue(Path(os.environ["PYDOCVI_WORK"]) / "queue", Stage.TRANSLATE)
+        each.add(Job(id="job001", stage=Stage.TRANSLATE, payload={"file": "bugs.po"}, **overrides))  # type: ignore[arg-type]
+        return each
+
+    def test_stats_on_a_queue_nobody_has_used(self, workspace: Path) -> None:
+        result = runner.invoke(app, ["queue", "stats"])
+        assert result.exit_code == ExitCode.OK
+        assert "outstanding: 0" in result.stdout
+
+    def test_stats_counts_what_is_waiting(self, workspace: Path) -> None:
+        self.add_job(workspace)
+        result = runner.invoke(app, ["queue", "stats"])
+        assert "outstanding: 1" in result.stdout
+        assert "translate" in result.stdout
+
+    def test_reap_returns_an_expired_lease(self, workspace: Path) -> None:
+        each = self.add_job(workspace)
+        each.claim(now=0.0)
+        result = runner.invoke(app, ["queue", "reap"])
+        assert "reaped 1 expired lease(s)" in result.stdout
+        assert each.count(State.PENDING) == 1
+
+    def test_reap_leaves_a_lease_that_is_still_running(self, workspace: Path) -> None:
+        each = self.add_job(workspace)
+        each.claim(now=time.time())
+        runner.invoke(app, ["queue", "reap"])
+        assert each.count(State.LEASED) == 1
+
+    def test_dead_lists_nothing_when_nothing_died(self, workspace: Path) -> None:
+        result = runner.invoke(app, ["queue", "dead"])
+        assert result.exit_code == ExitCode.OK
+        assert "nothing dead" in result.stdout
+
+    def test_dead_says_why_each_job_died(self, workspace: Path) -> None:
+        each = self.add_job(workspace, attempts=3)
+        claimed = each.claim(now=0.0)
+        assert claimed is not None
+        each.release(claimed, error="empty answer")
+        result = runner.invoke(app, ["queue", "dead"])
+        assert "empty answer" in result.stdout
+
+    def test_retry_is_the_only_way_back_from_dead(self, workspace: Path) -> None:
+        each = self.add_job(workspace, attempts=3)
+        claimed = each.claim(now=0.0)
+        assert claimed is not None
+        each.release(claimed, error="down")
+        result = runner.invoke(app, ["queue", "retry"])
+        assert "1 job(s) back to pending" in result.stdout
+        assert each.count(State.PENDING) == 1
+
+    def test_drain_asks_first(self, workspace: Path) -> None:
+        each = self.add_job(workspace)
+        claimed = each.claim(now=0.0)
+        assert claimed is not None
+        each.finish(claimed)
+        assert runner.invoke(app, ["queue", "drain"], input="n\n").exit_code != ExitCode.OK
+        assert each.count(State.DONE) == 1
+
+    def test_drain_removes_finished_work_only(self, workspace: Path) -> None:
+        each = self.add_job(workspace)
+        claimed = each.claim(now=0.0)
+        assert claimed is not None
+        each.finish(claimed)
+        result = runner.invoke(app, ["queue", "drain", "--yes"])
+        assert "removed 1 finished job(s)" in result.stdout
 
 
 def test_version_falls_back_when_the_package_is_not_installed(
