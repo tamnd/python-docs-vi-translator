@@ -136,6 +136,46 @@ class TestTm:
         assert "no segment" in result.stdout
 
 
+class TestClassify:
+    def test_prints_a_kind_for_every_entry(self, workspace: Path) -> None:
+        result = runner.invoke(app, ["classify"])
+        assert result.exit_code == ExitCode.OK
+        assert "prose" in result.stdout
+        assert "never sent to a model" in result.stdout
+
+    def test_report_writes_the_breakdown(self, workspace: Path) -> None:
+        result = runner.invoke(app, ["classify", "--report"])
+        assert result.exit_code == ExitCode.OK
+        report = (workspace / "work" / "reports" / "classify.md").read_text(encoding="utf-8")
+        assert report.startswith("# Classification")
+        assert "| kind | entries | share |" in report
+
+    def test_a_missing_upstream_checkout_is_a_failed_check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PYDOCVI_UPSTREAM", str(tmp_path / "absent"))
+        assert runner.invoke(app, ["classify"]).exit_code == ExitCode.CHECK_FAILED
+
+
+class TestBatch:
+    def test_prints_the_batch_and_file_counts(self, workspace: Path) -> None:
+        result = runner.invoke(app, ["batch"])
+        assert result.exit_code == ExitCode.OK
+        assert "batches over" in result.stdout
+
+    def test_stats_lists_the_heaviest_files(self, workspace: Path) -> None:
+        result = runner.invoke(app, ["batch", "--stats", "--top", "3"])
+        assert result.exit_code == ExitCode.OK
+        assert "entries per batch" in result.stdout
+        assert "bugs.po" in result.stdout
+
+    def test_a_missing_upstream_checkout_is_a_failed_check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PYDOCVI_UPSTREAM", str(tmp_path / "absent"))
+        assert runner.invoke(app, ["batch"]).exit_code == ExitCode.CHECK_FAILED
+
+
 def test_version_falls_back_when_the_package_is_not_installed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

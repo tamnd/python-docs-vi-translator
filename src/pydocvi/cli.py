@@ -6,13 +6,15 @@ enough to read in one screen.
 """
 
 import sys
+from pathlib import Path
 from typing import Annotated, NoReturn
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from pydocvi import __version__, config, sync
+from pydocvi import __version__, batch, classify, config, sync
+from pydocvi.catalog import Catalog
 from pydocvi.logs import configure_logging
 from pydocvi.memory import Memory
 
@@ -114,6 +116,106 @@ def sync_command(
     (where.reports / "sync.md").write_text(changes.as_markdown(), encoding="utf-8")
     memory.save(where.memory)
     console.print(f"wrote {where.upstream_pin} and {where.memory}")
+
+
+@app.command(name="classify")
+def classify_command(
+    report: Annotated[
+        bool, typer.Option("--report", help="Write the breakdown to reports/classify.md.")
+    ] = False,
+) -> None:
+    """Count what the corpus is made of, and what a model will never see."""
+    where = config.paths()
+    catalogs = _corpus(where.upstream)
+    counts = classify.counts([entry.msgid for cat in catalogs for entry in cat])
+
+    table = Table(title="entries by kind", box=None)
+    table.add_column("kind")
+    table.add_column("entries", justify="right")
+    table.add_column("share", justify="right")
+    for kind, count in _kinds(counts):
+        table.add_row(kind, f"{count:,}", f"{count / counts.total:.1%}")
+    table.add_row("[bold]total", f"[bold]{counts.total:,}", "")
+    console.print(table)
+    console.print(f"never sent to a model: {counts.passthrough:,}")
+
+    if report:
+        where.reports.mkdir(parents=True, exist_ok=True)
+        target = where.reports / "classify.md"
+        target.write_text(_classify_markdown(counts), encoding="utf-8")
+        console.print(f"wrote {target}")
+
+
+def _kinds(counts: classify.Counts) -> list[tuple[str, int]]:
+    return [
+        ("prose", counts.prose),
+        ("no-op", counts.noop),
+        ("doctest", counts.doctest),
+        ("literal block", counts.literal_block),
+        ("version marker", counts.version_marker),
+    ]
+
+
+def _classify_markdown(counts: classify.Counts) -> str:
+    lines = [
+        "# Classification",
+        "",
+        "| kind | entries | share |",
+        "| --- | ---: | ---: |",
+    ]
+    lines += [
+        f"| {kind} | {count} | {count / counts.total:.1%} |" for kind, count in _kinds(counts)
+    ]
+    lines += [
+        f"| **total** | **{counts.total}** | |",
+        "",
+        f"{counts.passthrough} entries are copied through without a model call.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+@app.command(name="batch")
+def batch_command(
+    stats: Annotated[bool, typer.Option("--stats", help="Print the batching numbers.")] = False,
+    top: Annotated[int, typer.Option(help="How many files to list by batch count.")] = 10,
+) -> None:
+    """Cut the corpus into batches and report what came out."""
+    where = config.paths()
+    batches = batch.build(_corpus(where.upstream), root=where.upstream)
+    measured = batch.stats(batches)
+
+    console.print(f"{measured.batches:,} batches over {measured.files:,} files")
+    if not stats:
+        return
+
+    table = Table(box=None)
+    table.add_column("")
+    table.add_column("", justify="right")
+    table.add_row("entries batched", f"{measured.entries:,}")
+    table.add_row("msgid characters", f"{measured.characters:,}")
+    table.add_row("protected spans", f"{measured.spans:,}")
+    table.add_row("entries per batch", f"{measured.entries_per_batch:.1f}")
+    table.add_row("characters per batch", f"{measured.characters_per_batch:,.0f}")
+    table.add_row("batches over a cap alone", f"{measured.oversized:,}")
+    console.print(table)
+
+    heaviest = sorted(batch.by_file(batches).items(), key=lambda pair: -pair[1])[:top]
+    files = Table(title=f"heaviest {top} files", box=None)
+    files.add_column("file")
+    files.add_column("batches", justify="right")
+    files.add_column("share", justify="right")
+    for path, count in heaviest:
+        files.add_row(path, f"{count:,}", f"{count / measured.batches:.1%}")
+    console.print(files)
+
+
+def _corpus(upstream: Path) -> list[Catalog]:
+    """Read the upstream corpus, or exit saying it is not there."""
+    if not upstream.exists():
+        console.print(f"[red]no upstream checkout at {upstream}[/red]")
+        raise typer.Exit(ExitCode.CHECK_FAILED)
+    return sync.read_corpus(upstream)
 
 
 @tm_app.command("stats")
