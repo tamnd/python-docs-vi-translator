@@ -104,9 +104,13 @@ class FakeClient:
         self.served = served
         self.delay = delay
         self.calls: list[tuple[str, str]] = []
+        #: The system message of every call, kept apart from ``calls`` so that
+        #: the tests written before there was one still read the same way.
+        self.systems: list[str | None] = []
 
     async def complete(self, route: Route, prompt: str, *, system: str | None = None) -> Answer:
         self.calls.append((route.name, prompt))
+        self.systems.append(system)
         if self.delay:
             await asyncio.sleep(self.delay)
         if callable(self.answers):

@@ -409,6 +409,51 @@ class TestEstimates:
         assert "Not measured, and not in the total: b, c." in report
 
 
+class TestMeasured:
+    """The bench as a number, beside the table written for people.
+
+    ``translate`` prints what a tier will cost before it spends anything, and
+    the estimate comes from the last bench rather than from a table somebody
+    wrote before anything had run. Reading it back out of the markdown would be
+    a parser for this project's own report and would break silently the first
+    time a column moved.
+    """
+
+    def test_the_fleet_rate_is_the_sum_of_the_routes(self) -> None:
+        """Calls per hour add up because the routes are called at once. This is
+        the number every wall-clock estimate is divided by."""
+        results = [
+            Bench(route="a", calls=20, failures=0, empty=0, seconds=3600.0, concurrency=4),
+            Bench(route="b", calls=10, failures=0, empty=0, seconds=3600.0, concurrency=2),
+        ]
+        assert fleetmod.Measured.of(results, batches=2_776).calls_per_hour == 30.0
+
+    def test_it_names_the_routes_the_number_came_from(self) -> None:
+        """An estimate off a two-route bench is wrong for a three-route run, and
+        the person reading it is the only one who can notice."""
+        results = [Bench(route="a", calls=1, failures=0, empty=0, seconds=3600.0, concurrency=1)]
+        assert fleetmod.Measured.of(results, batches=10).routes == ("a",)
+
+    def test_it_survives_a_round_trip_through_the_file(self) -> None:
+        results = [Bench(route="a", calls=20, failures=0, empty=0, seconds=3600.0, concurrency=4)]
+        measured = fleetmod.Measured.of(results, batches=2_776)
+        assert fleetmod.Measured.from_json(measured.as_json()) == measured
+
+    def test_a_file_from_an_older_version_reads_as_no_measurement(self) -> None:
+        """Rather than a KeyError on hour zero of a run. A missing rate means no
+        estimate, which is a thing the command knows how to say."""
+        measured = fleetmod.Measured.from_json('{"version": 1}')
+        assert (measured.calls_per_hour, measured.batches, measured.routes) == (0.0, 0, ())
+
+    def test_the_file_is_written_for_a_diff(self) -> None:
+        """Sorted and one field per line, because it is committed beside the
+        markdown and a reordering would show as a whole file changed."""
+        results = [Bench(route="a", calls=20, failures=0, empty=0, seconds=3600.0, concurrency=4)]
+        text = fleetmod.Measured.of(results, batches=7).as_json()
+        assert text.endswith("\n")
+        assert text.index('"batches"') < text.index('"calls_per_hour"')
+
+
 @pytest.mark.asyncio
 class TestBench:
     async def test_a_route_is_measured_at_its_stated_concurrency(self) -> None:

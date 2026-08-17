@@ -8,7 +8,7 @@ resumable and what makes ``--check`` mean anything.
 """
 
 import hashlib
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -208,3 +208,59 @@ def by_file(batches: Iterable[Batch]) -> dict[str, int]:
     for batch in batches:
         counts[batch.path] = counts.get(batch.path, 0) + 1
     return counts
+
+
+#: The six tiers, in the order they are translated.
+#:
+#: By review value per call, not by size and not alphabetically. Tier 1 is the
+#: PEP 545 language-switcher set and is small enough that a person can read all
+#: of it, which is the point: whatever is systematically wrong shows up there
+#: for the price of sixty calls instead of in tier 5 for the price of thirteen
+#: hundred. Tier 6 is last because ``changelog.po`` is a sixth of the corpus in
+#: one generated file nobody reads in translation.
+#:
+#: A directory name matches the directory and a file name matches the file, and
+#: nothing here is a glob. A pattern language would let a tier quietly widen the
+#: day somebody adds a directory upstream, and every tier boundary in this table
+#: is a decision somebody made rather than a shape a path happens to have.
+TIERS: Mapping[int, tuple[str, ...]] = {
+    1: ("bugs.po", "tutorial", "library/functions.po"),
+    2: ("faq", "installing", "distributing", "deprecations"),
+    3: ("reference", "howto", "using", "extending"),
+    4: ("c-api",),
+    5: ("library",),
+    6: ("whatsnew", "changelog.po"),
+}
+
+#: Tier 2 also takes every file at the top of the tree. Named as a rule rather
+#: than as a list, because the root pages are the ones upstream adds without
+#: telling anybody, and a list would go stale silently and leave them
+#: untranslated with no error anywhere.
+ROOT_TIER = 2
+
+
+class TierError(ValueError):
+    """A tier that is not one of the six."""
+
+
+def tier_of(path: str) -> int:
+    """Which tier a corpus path belongs to.
+
+    Longest match wins, which is the whole reason ``library/functions.po`` can
+    be in tier 1 while the rest of ``library/`` waits for tier 5. Without that
+    rule the table would be ambiguous and the ambiguity would be resolved by
+    dictionary order, which is not a decision anybody made.
+    """
+    best, found = 0, ROOT_TIER if "/" not in path else 0
+    for tier, patterns in TIERS.items():
+        for pattern in patterns:
+            if (path == pattern or path.startswith(f"{pattern}/")) and len(pattern) > best:
+                best, found = len(pattern), tier
+    return found
+
+
+def of_tier(batches: Iterable[Batch], tier: int) -> list[Batch]:
+    """The batches belonging to one tier, in corpus order."""
+    if tier not in TIERS:
+        raise TierError(f"tier {tier} is not one of {', '.join(str(n) for n in TIERS)}")
+    return [batch for batch in batches if tier_of(batch.path) == tier]

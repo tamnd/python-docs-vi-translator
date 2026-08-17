@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 from pydocvi.client import Answer, Clock, Completions, FleetError, RealClock
 from pydocvi.queue import Job, Queue, State
+from pydocvi.render import Prompt
 from pydocvi.routes import Route, Router
 
 log = logging.getLogger(__name__)
@@ -26,7 +27,13 @@ log = logging.getLogger(__name__)
 #: cooldown does not produce an hour of log lines saying so.
 IDLE_POLL = 30.0
 
-type Build = Callable[[Job], str]
+#: A call is two messages, not one. The system message is where the whole
+#: translating instruction and the batch's terminology live, so a ``build`` that
+#: returned one string would have to either drop it or paste it on the front of
+#: the user message, and the second would change what the model was told on
+#: every call while the prompt hash in the provenance comment went on claiming
+#: it had not. :class:`pydocvi.render.Prompt` is the pair.
+type Build = Callable[[Job], Prompt]
 type Handle = Callable[[Job, Answer], Awaitable[None]]
 
 
@@ -166,7 +173,8 @@ class Worker:
         """Returns whether the job is finished with, one way or another."""
         async with self._permits[route.name]:
             try:
-                answer = await self.client.complete(route, self.build(job))
+                prompt = self.build(job)
+                answer = await self.client.complete(route, prompt.user, system=prompt.system)
             except FleetError as error:
                 self.router.cool(route.name, self.clock.now(), str(error))
                 self.progress.failed += 1

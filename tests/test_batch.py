@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from pydocvi import batch, catalog
+import pytest
+
+from pydocvi import batch, catalog, sync
 from pydocvi.batch import CHARACTER_CAP, ENTRY_CAP, SPAN_CAP
 from pydocvi.catalog import Entry
 
@@ -98,3 +100,50 @@ class TestStats:
     def test_by_file_counts_batches(self) -> None:
         batches = list(batch.pack("a.po", [item(f"Sentence {n}.") for n in range(50)]))
         assert batch.by_file(batches) == {"a.po": 2}
+
+
+class TestTiers:
+    def test_the_first_tier_is_the_three_things_people_read_first(self) -> None:
+        assert batch.tier_of("bugs.po") == 1
+        assert batch.tier_of("tutorial/introduction.po") == 1
+        assert batch.tier_of("library/functions.po") == 1
+
+    def test_one_file_can_be_promoted_out_of_its_directory(self) -> None:
+        """Longest match wins, which is the whole reason library/functions.po
+        can be in tier 1 while the rest of library/ waits for tier 5. Without
+        that rule the table is ambiguous and dictionary order decides it."""
+        assert batch.tier_of("library/functions.po") == 1
+        assert batch.tier_of("library/asyncio.po") == 5
+
+    def test_a_page_at_the_top_of_the_tree_is_tier_two(self) -> None:
+        """Named as a rule rather than as a list, because the root pages are the
+        ones upstream adds without telling anybody and a list would go stale
+        silently and leave them untranslated with nothing raised anywhere."""
+        assert batch.tier_of("contents.po") == 2
+        assert batch.tier_of("glossary.po") == 2
+
+    def test_a_directory_named_in_the_table_takes_its_whole_subtree(self) -> None:
+        assert batch.tier_of("c-api/object.po") == 4
+        assert batch.tier_of("whatsnew/3.14.po") == 6
+
+    def test_a_prefix_that_is_not_a_path_component_does_not_match(self) -> None:
+        assert batch.tier_of("librarything/x.po") == 0
+
+    def test_the_batches_of_a_tier_keep_the_corpus_order(self) -> None:
+        one = batch.Batch(id="a", path="tutorial/intro.po", items=())
+        two = batch.Batch(id="b", path="c-api/object.po", items=())
+        three = batch.Batch(id="c", path="tutorial/classes.po", items=())
+        assert [b.id for b in batch.of_tier([one, two, three], 1)] == ["a", "c"]
+
+    def test_a_tier_nobody_has_is_a_usage_error_and_not_an_empty_list(self) -> None:
+        """An empty list reads as "that tier is done" and would send somebody
+        looking for the run that finished it."""
+        with pytest.raises(batch.TierError, match="tier 9"):
+            batch.of_tier([], 9)
+
+    @pytest.mark.corpus
+    def test_every_file_in_the_real_corpus_lands_in_a_tier(self, upstream: Path) -> None:
+        """The check that matters. A file in no tier is a file no run reaches,
+        and nothing else in this tool would ever say so."""
+        batches = batch.build(sync.read_corpus(upstream), root=upstream)
+        assert [one.path for one in batches if batch.tier_of(one.path) == 0] == []

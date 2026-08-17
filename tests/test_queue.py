@@ -377,3 +377,42 @@ class TestQueues:
         translate.finish(claimed)
         translate.drain()
         assert judge.count(State.PENDING) == 1
+
+
+class TestBurying:
+    def test_a_job_goes_straight_to_dead_whatever_its_attempts_say(self, tmp_path: Path) -> None:
+        """For a failure more attempts cannot fix, which release has no way to
+        express: it decides from the counter, and the counter is about the
+        transport rather than about the answer."""
+        one = Queue(tmp_path, Stage.TRANSLATE)
+        job = make_job()
+        one.add(job)
+        one.bury(job, error="3 entries refused after 3 rungs")
+        assert one.count(State.DEAD) == 1
+        assert one.count(State.PENDING) == 0
+
+    def test_a_buried_job_says_why(self, tmp_path: Path) -> None:
+        one = Queue(tmp_path, Stage.TRANSLATE)
+        one.add(make_job())
+        one.bury(make_job(), error="3 entries refused after 3 rungs")
+        assert one.jobs(State.DEAD)[0].error == "3 entries refused after 3 rungs"
+
+    def test_a_buried_job_keeps_the_claims_it_had(self, tmp_path: Path) -> None:
+        """The two counters stay separate. A job buried on its first claim is
+        not a job that used three, and an audit has to be able to tell them
+        apart."""
+        one = Queue(tmp_path, Stage.TRANSLATE)
+        one.add(make_job())
+        claimed = one.claim(now=0.0)
+        assert claimed is not None
+        one.bury(claimed, error="out of rungs")
+        assert one.jobs(State.DEAD)[0].attempts == 1
+
+    def test_a_buried_job_can_be_retried_by_a_person(self, tmp_path: Path) -> None:
+        """Never automatic. This is the command you run after the traces told
+        you what was wrong and you fixed it."""
+        one = Queue(tmp_path, Stage.TRANSLATE)
+        one.add(make_job())
+        one.bury(make_job(), error="out of rungs")
+        assert one.retry() == 1
+        assert one.count(State.PENDING) == 1

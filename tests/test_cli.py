@@ -15,7 +15,7 @@ from typer.testing import CliRunner
 
 import pydocvi
 from conftest import FAKE_KEY, FakeRunner
-from pydocvi import __version__, cli, config, fleet, glossary, mine, render
+from pydocvi import __version__, cli, config, fleet, glossary, mine, render, worker
 from pydocvi.catalog import segment_id
 from pydocvi.cli import ExitCode, app, main
 from pydocvi.client import Answer
@@ -444,6 +444,25 @@ class TestFleetCommands:
         assert result.stdout.index("first:") < result.stdout.index("second:")
         assert result.stdout.index("second:") < result.stdout.index("wrote ")
 
+    def test_bench_writes_the_measurement_for_translate_as_well_as_for_people(
+        self,
+        route_file: Path,
+        commands: FakeRunner,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``translate`` estimates off this file. Reading the number back out of
+        the markdown would be a parser for this project's own report and would
+        break silently the first time a column moved."""
+        measured = [
+            fleet.Bench(route="a", calls=4, failures=0, empty=0, seconds=3600.0, concurrency=1)
+        ]
+        monkeypatch.setattr("pydocvi.cli._bench", _returning(measured))
+        result = runner.invoke(app, ["fleet", "bench", "--calls", "4", "--yes"])
+        assert result.exit_code == ExitCode.OK
+        sidecar = config.paths().reports / "fleet-bench.json"
+        assert fleet.Measured.from_json(sidecar.read_text(encoding="utf-8")).calls_per_hour == 4.0
+
     def test_bench_on_a_route_that_does_not_exist(
         self, route_file: Path, commands: FakeRunner
     ) -> None:
@@ -484,6 +503,165 @@ def _answering(results: list[fleet.Liveness]) -> Callable[..., list[fleet.Livene
         for result in results:
             say(result)
         return results
+
+    return _stub
+
+
+class TestTranslate:
+    """The one command that spends money, and the only one that writes the corpus."""
+
+    def test_a_dry_run_says_what_it_would_cost_and_queues_nothing(
+        self, workspace: Path, route_file: Path
+    ) -> None:
+        """A dry run that queued the work would leave the queue in exactly the
+        state a real run leaves it in, which is the opposite of what somebody
+        asks a dry run for."""
+        result = runner.invoke(app, ["translate", "--tier", "1", "--dry-run"])
+        assert result.exit_code == ExitCode.OK
+        assert "tier 1:" in result.stdout
+        assert len(Queue(config.paths().queue, Stage.TRANSLATE)) == 0
+
+    def test_with_no_bench_on_record_it_says_so_rather_than_guessing(
+        self, workspace: Path, route_file: Path
+    ) -> None:
+        """A default rate would print a number that looks measured and is not,
+        and the estimate is the thing the person is deciding on."""
+        result = runner.invoke(app, ["translate", "--tier", "1", "--dry-run"])
+        assert "no fleet bench on record" in result.stdout
+
+    def test_the_estimate_comes_from_the_last_bench(
+        self, workspace: Path, route_file: Path
+    ) -> None:
+        _bench_on_record(200.0, routes=("a", "b"))
+        result = runner.invoke(app, ["translate", "--tier", "1", "--dry-run"])
+        assert "at the measured 200.0 calls/hour" in result.stdout
+        assert "over a, b" in result.stdout
+
+    def test_a_bench_that_measured_nothing_produces_no_estimate(
+        self, workspace: Path, route_file: Path
+    ) -> None:
+        _bench_on_record(0.0)
+        result = runner.invoke(app, ["translate", "--tier", "1", "--dry-run"])
+        assert "measured no calls" in result.stdout
+
+    def test_a_tier_nobody_has_is_a_usage_error(self, workspace: Path, route_file: Path) -> None:
+        result = runner.invoke(app, ["translate", "--tier", "9", "--dry-run"])
+        assert result.exit_code == ExitCode.USAGE
+        assert "tier 9" in result.stdout
+
+    def test_a_tier_with_nothing_in_it_is_a_usage_error_rather_than_a_run(
+        self, workspace: Path, route_file: Path
+    ) -> None:
+        """An empty selection reads as "that tier is done" and would send
+        somebody looking for the run that finished it."""
+        result = runner.invoke(app, ["translate", "--tier", "4", "--dry-run"])
+        assert result.exit_code == ExitCode.USAGE
+        assert "nothing to translate" in result.stdout
+
+    def test_a_file_nobody_has_is_a_usage_error(self, workspace: Path, route_file: Path) -> None:
+        result = runner.invoke(app, ["translate", "--file", "absent.po", "--dry-run"])
+        assert result.exit_code == ExitCode.USAGE
+
+    def test_one_file_can_be_translated_on_its_own(self, workspace: Path, route_file: Path) -> None:
+        result = runner.invoke(app, ["translate", "--file", "bugs.po", "--dry-run"])
+        assert result.exit_code == ExitCode.OK
+        assert "the selection:" in result.stdout
+
+    def test_it_asks_before_spending_anything(self, workspace: Path, route_file: Path) -> None:
+        result = runner.invoke(app, ["translate", "--tier", "1"], input="n\n")
+        assert result.exit_code != ExitCode.OK
+
+    def test_it_checks_for_the_key_before_asking_to_spend_calls(
+        self, workspace: Path, route_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("CHATGPT_PROXY_KEY")
+        result = runner.invoke(app, ["translate", "--tier", "1"])
+        assert result.exit_code == ExitCode.FLEET_UNREACHABLE
+        assert "continue?" not in result.stdout
+
+    def test_a_run_reports_what_it_called_and_what_came_back(
+        self, workspace: Path, route_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("pydocvi.cli._translate", _ran(_progress()))
+        result = runner.invoke(app, ["translate", "--tier", "1", "--yes"])
+        assert result.exit_code == ExitCode.OK
+        assert "12 calls in 1.0h at 12.0 calls/hour" in result.stdout
+        assert "entries accepted" in result.stdout
+
+    def test_a_run_reports_refusals_by_rule_and_by_rung(
+        self, workspace: Path, route_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The number that says whether the prompt is working, and the reason
+        the tally is kept as the run goes rather than read back off the corpus."""
+        monkeypatch.setattr("pydocvi.cli._translate", _ran(_progress(), refusals=True))
+        result = runner.invoke(app, ["translate", "--tier", "1", "--yes"])
+        assert "P01" in result.stdout
+        assert "rung 1:" in result.stdout
+
+    def test_a_second_pass_over_a_tier_queues_only_what_is_left(
+        self, workspace: Path, route_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """What makes a re-run cheap, and the reason the queue is content
+        addressed rather than a list of what to do."""
+        monkeypatch.setattr("pydocvi.cli._translate", _ran(_progress()))
+        runner.invoke(app, ["translate", "--tier", "1", "--yes"])
+        result = runner.invoke(app, ["translate", "--tier", "1", "--dry-run"])
+        assert "already known" in result.stdout
+
+    def test_resume_works_the_queue_and_adds_nothing(
+        self, workspace: Path, route_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("pydocvi.cli._translate", _ran(_progress()))
+        runner.invoke(app, ["translate", "--tier", "1", "--dry-run"])
+        result = runner.invoke(app, ["translate", "--resume", "--yes"])
+        assert "queueing nothing new" in result.stdout
+        assert "0 batches already queued" in result.stdout
+
+    def test_a_selection_that_is_already_done_spends_nothing(
+        self, workspace: Path, route_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        called = _ran(_progress())
+        monkeypatch.setattr("pydocvi.cli._translate", called)
+        runner.invoke(app, ["translate", "--tier", "1", "--yes"])
+        _finish(config.paths().queue)
+        result = runner.invoke(app, ["translate", "--tier", "1", "--yes"])
+        assert "every batch in the selection is already done" in result.stdout
+
+
+def _bench_on_record(rate: float, *, routes: tuple[str, ...] = ("a",)) -> None:
+    """A fleet-bench sidecar, as ``fleet bench`` would have left one."""
+    reports = config.paths().reports
+    reports.mkdir(parents=True, exist_ok=True)
+    measured = fleet.Measured(calls_per_hour=rate, batches=2_776, routes=routes)
+    (reports / "fleet-bench.json").write_text(measured.as_json(), encoding="utf-8")
+
+
+def _progress() -> worker.Progress:
+    return worker.Progress(done=12, empty=1, failed=0, seconds=3600.0)
+
+
+def _finish(root: Path) -> None:
+    """Mark everything queued as done, the way a completed run leaves it."""
+    each = Queue(root, Stage.TRANSLATE)
+    for job in each.jobs(State.PENDING):
+        each.finish(job)
+
+
+def _ran(progress: worker.Progress, *, refusals: bool = False) -> Callable[..., object]:
+    """A stand-in for ``_translate`` that spends no calls.
+
+    It records into the run's tally the way the real one does through
+    ``handle``, because the closing lines are read off that rather than off the
+    worker.
+    """
+
+    async def _stub(run: object, known: object, *, limit: int | None) -> object:
+        if refusals:
+            tally = run.tally  # type: ignore[attr-defined]
+            tally.accepted, tally.refused, tally.batches = 39, 1, 1
+            tally.by_rule["P01"] = 1
+            tally.by_attempt[1] = 1
+        return progress
 
     return _stub
 
