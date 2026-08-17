@@ -375,11 +375,51 @@ def check(glossary: Glossary) -> list[Rejection]:
     return [*_collisions(glossary), *_shadowing(glossary)]
 
 
+def _bare(word: str) -> str:
+    """A word with the joins taken out, so "built-in" and "builtin" are one word."""
+    return _fold(word).replace("-", "").replace("_", "").replace(" ", "")
+
+
+def _inflected(one: str, other: str) -> bool:
+    """Whether two English terms are one term wearing different endings.
+
+    Vietnamese does not mark plural, so "file object" and "file objects" have
+    the same rendering and there is no wording that would give them different
+    ones. The matcher works on whole words, so "file object" does not match
+    inside "file objects" and both rows have to be in the file for both forms to
+    be enforced. A rule that forbade the pair would be a rule the glossary
+    cannot satisfy, so this is what it excuses.
+
+    It compares word by word first, because the ending that differs is often not
+    at the end of the term: "backwards compatibility" against "backward
+    compatibility".
+    """
+    if _bare(one) == _bare(other):
+        return True
+    left, right = one.split(), other.split()
+    if len(left) != len(right):
+        return False
+    return all(_ending(this, that) for this, that in zip(left, right, strict=True))
+
+
+def _ending(one: str, other: str) -> bool:
+    """Whether two words differ by nothing but an English plural."""
+    one, other = _bare(one), _bare(other)
+    if one == other:
+        return True
+    shorter, longer = sorted((one, other), key=len)
+    if longer in (shorter + "s", shorter + "es"):
+        return True
+    return shorter.endswith("y") and longer == shorter[:-1] + "ies"
+
+
 def _collisions(glossary: Glossary) -> list[Rejection]:
     """``G-e``: two English terms may not share a rendering uncontextualised.
 
     A collision is how a reader searching for one thing finds another, and it is
-    invisible in review because each row is defensible on its own.
+    invisible in review because each row is defensible on its own. Terms that
+    are the same word in singular and plural are not a collision, because a
+    reader who finds both has found one thing. See :func:`_inflected`.
     """
     by_vi: dict[str, list[Term]] = {}
     for term in glossary:
@@ -389,12 +429,13 @@ def _collisions(glossary: Glossary) -> list[Rejection]:
             rule="G-e",
             en=term.en,
             detail=f"renders as {term.rendering!r}, so does "
-            f"{', '.join(repr(other.en) for other in group if other is not term)}",
+            f"{', '.join(repr(other.en) for other in clashing)}",
         )
         for group in by_vi.values()
         if len(group) > 1
         for term in group
         if any(other.context is None for other in group)
+        if (clashing := [other for other in group if not _inflected(term.en, other.en)])
     ]
 
 

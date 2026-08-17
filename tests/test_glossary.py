@@ -353,6 +353,75 @@ class TestCollisions:
         assert glossary.check(rows) == []
 
 
+class TestASingularAndItsPlural:
+    """The pair the rule cannot forbid without forbidding the whole glossary.
+
+    The matcher is whole word, so "file object" does not match inside "file
+    objects" and both forms need a row of their own for both to be enforced.
+    Vietnamese renders them the same. A rule that called that a collision would
+    be a rule with no way to satisfy it.
+    """
+
+    def test_a_plural_may_share_the_rendering_of_its_singular(self):
+        rows = make(term("file objects", "đối tượng tệp"), term("file object", "đối tượng tệp"))
+        assert glossary.check(rows) == []
+
+    def test_an_es_plural_may_too(self):
+        rows = make(term("type aliases", "bí danh kiểu"), term("type alias", "bí danh kiểu"))
+        assert glossary.check(rows) == []
+
+    def test_a_y_to_ies_plural_may_too(self):
+        rows = make(
+            term("shared libraries", "thư viện dùng chung"),
+            term("shared library", "thư viện dùng chung"),
+        )
+        assert glossary.check(rows) == []
+
+    def test_the_ending_that_differs_need_not_be_the_last_word(self):
+        rows = make(
+            term("backwards compatibility", "tương thích ngược"),
+            term("backward compatibility", "tương thích ngược"),
+        )
+        assert glossary.check(rows) == []
+
+    def test_a_hyphen_is_not_a_difference(self):
+        rows = make(
+            term("multi-phase initialization", "khởi tạo nhiều giai đoạn"),
+            term("multiphase initialization", "khởi tạo nhiều giai đoạn"),
+        )
+        assert glossary.check(rows) == []
+
+    def test_two_terms_that_only_look_alike_still_collide(self):
+        """ "params" is not a plural of "parameter", it is a different word."""
+        rows = make(term("type parameters", "tham số kiểu"), term("type params", "tham số kiểu"))
+        assert len(glossary.check(rows)) == 2
+
+    def test_a_real_collision_beside_a_plural_is_still_caught(self):
+        rows = make(
+            term("file objects", "đối tượng tệp"),
+            term("file object", "đối tượng tệp"),
+            term("handle", "đối tượng tệp"),
+        )
+        assert {problem.en for problem in glossary.check(rows)} == {
+            "file objects",
+            "file object",
+            "handle",
+        }
+
+    def test_the_plural_is_not_named_as_the_thing_its_singular_collides_with(self):
+        """The detail names what a reader has to decide between, and the plural
+        of the term itself is not one of those things.
+        """
+        rows = make(
+            term("file objects", "đối tượng tệp"),
+            term("file object", "đối tượng tệp"),
+            term("handle", "đối tượng tệp"),
+        )
+        found = {problem.en: problem.detail for problem in glossary.check(rows)}
+        assert "'file object'" not in found["file objects"]
+        assert "'handle'" in found["file objects"]
+
+
 class TestShadowing:
     def test_a_shorter_term_listed_above_a_longer_one_is_rejected(self):
         rows = make(term("context", "ngữ cảnh"), term("context manager", "trình quản lý"))

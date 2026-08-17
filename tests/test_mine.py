@@ -250,6 +250,61 @@ class TestFrequencySource:
         assert mine.from_frequency([]) == []
 
 
+class TestTokensThatAreNotWords:
+    """What the corpus produced when only the letters of a token were read.
+
+    Reading letters and skipping the rest does not skip ``utf-8``, it reads
+    ``utf-`` and moves on, and the phrases built on top of that reached the
+    proposal: ``encoding utf-``, ``utf- encoded``, ``ipv addresses``, ``py
+    ssize``, ``py decref``, ``def init``.
+    """
+
+    def test_a_version_number_leaves_nothing_behind(self):
+        found = {
+            candidate.en
+            for candidate in mine.from_frequency(["encoding utf-8 output"] * 10, minimum=8)
+        }
+        assert not any("utf" in phrase for phrase in found)
+
+    def test_a_word_ending_in_a_digit_leaves_nothing_behind(self):
+        found = {
+            candidate.en for candidate in mine.from_frequency(["the ipv6 address"] * 10, minimum=8)
+        }
+        assert not any("ipv" in phrase for phrase in found)
+
+    def test_the_halves_of_an_identifier_are_not_a_phrase(self):
+        found = {
+            candidate.en
+            for candidate in mine.from_frequency(["the Py_ssize_t width"] * 10, minimum=8)
+        }
+        assert "py ssize" not in found
+
+    def test_a_dunder_leaves_nothing_behind(self):
+        found = {
+            candidate.en for candidate in mine.from_frequency(["def __init__ here"] * 10, minimum=8)
+        }
+        assert "def init" not in found
+
+    def test_the_words_either_side_of_one_are_not_joined(self):
+        """The point of the whole thing. Skipping a token silently joins its
+        neighbours, and the joined pair reads like a term while being evidence
+        of nothing.
+        """
+        found = {
+            candidate.en
+            for candidate in mine.from_frequency(["encoding utf-8 output"] * 10, minimum=8)
+        }
+        assert "encoding output" not in found
+
+    def test_a_word_next_to_one_still_counts_on_its_own(self):
+        """Throwing the token away must not throw away the phrase beside it."""
+        found = {
+            candidate.en
+            for candidate in mine.from_frequency(["python 3 memory allocator"] * 10, minimum=8)
+        }
+        assert "memory allocator" in found
+
+
 class TestSingleWordsAreLeftToTheCuratedSources:
     """Counting one word over a documentation corpus measures English.
 

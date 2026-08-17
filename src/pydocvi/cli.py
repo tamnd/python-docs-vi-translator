@@ -649,8 +649,15 @@ async def _curate(known: list[routes.Route], made: list[curate.Batch]) -> list[c
 @glossary_app.command("check")
 def glossary_check(
     path: Annotated[Path | None, typer.Option(help="Check a file other than the glossary.")] = None,
+    fix: Annotated[bool, typer.Option(help="Regenerate the table G05 is unhappy about.")] = False,
 ) -> None:
-    """Run ``G-e`` and ``G-f`` over the list, and ``G05`` over the Markdown."""
+    """Run ``G-e`` and ``G-f`` over the list, and ``G05`` over the Markdown.
+
+    ``--fix`` is only for ``G05``, which is the one problem here with a
+    mechanical answer: the table is generated, so a table that disagrees with
+    the glossary is regenerated rather than argued with. ``G-e`` and ``G-f`` are
+    about what the rows say and there is nothing to do about them but decide.
+    """
     where = config.paths()
     target = path or where.glossary
     if not target.exists():
@@ -660,7 +667,13 @@ def glossary_check(
     terms = glossary.load(target)
     problems = glossary.check(terms)
     if where.glossary_markdown.exists() and path is None:
-        problems += glossary.agrees(where.glossary_markdown.read_text(encoding="utf-8"), terms)
+        markdown = where.glossary_markdown.read_text(encoding="utf-8")
+        stale = glossary.agrees(markdown, terms)
+        if stale and fix:
+            where.glossary_markdown.write_text(glossary.render(markdown, terms), encoding="utf-8")
+            console.print(f"regenerated the table in {where.glossary_markdown}")
+        else:
+            problems += stale
 
     for problem in problems:
         console.print(f"[red]{problem.rule}[/red] {problem.en}: {problem.detail}")

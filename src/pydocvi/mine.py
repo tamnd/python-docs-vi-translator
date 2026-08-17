@@ -85,8 +85,21 @@ you your yourself
 
 STOPWORDS = frozenset(_STOPWORDS.split())
 
-#: A word, for the purposes of counting phrases. Letters only, so version
-#: numbers, hex constants and ``__init__`` never reach the counter.
+#: A run of characters that is not whitespace and not sentence punctuation. It
+#: is matched whole so that a word touching a digit or an underscore is seen
+#: whole, and can then be thrown away whole by ``_WORD`` below.
+#:
+#: This is here because matching words directly did not do that. A pattern that
+#: takes letters and skips everything else does not skip ``utf-8``, it takes
+#: ``utf-`` out of the middle of it, and the second real run over the corpus
+#: proposed ``encoding utf-``, ``utf- encoded`` and ``ipv addresses`` off the
+#: back of exactly that, plus ``py ssize`` and ``py decref`` out of
+#: ``Py_ssize_t`` and ``Py_DECREF``, and ``def init`` out of ``__init__``.
+_TOKEN = re.compile("[A-Za-z0-9_][A-Za-z0-9_'\\u2019-]*")
+
+#: A token that counts as a word. Letters, with hyphens inside a compound. A
+#: token holding a digit or an underscore is a version number, a constant or an
+#: identifier, and none of those is a term.
 #:
 #: The apostrophes are in here because they were missing. Without them the
 #: first real run over the corpus split every contraction in two and proposed
@@ -347,13 +360,24 @@ def _runs(text: str) -> list[list[str]]:
 
     Phrases never cross a comma or a full stop, because "the module, function"
     is two things and counting it as one produces candidates that read like
-    somebody transcribed a list wrongly.
+    somebody transcribed a list wrongly. They do not cross a token that is not a
+    word either, for the same reason: "encoding utf-8 data" is not evidence for
+    the phrase "encoding data".
     """
-    return [
-        [word.group(0).lower() for word in _WORD.finditer(clause)]
-        for clause in re.split(r"[^A-Za-z-]*[,.;:()\[\]]+[^A-Za-z-]*|\n", text)
-        if clause
-    ]
+    runs: list[list[str]] = []
+    for clause in re.split(r"[^A-Za-z-]*[,.;:()\[\]]+[^A-Za-z-]*|\n", text):
+        if not clause:
+            continue
+        run: list[str] = []
+        for token in _TOKEN.finditer(clause):
+            word = token.group(0)
+            if _WORD.fullmatch(word):
+                run.append(word.lower())
+            elif run:
+                runs.append(run)
+                run = []
+        runs.append(run)
+    return runs
 
 
 def from_machine(catalogs: Iterable[Catalog]) -> list[Candidate]:

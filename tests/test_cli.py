@@ -622,6 +622,49 @@ class TestGlossaryCheck:
         assert result.exit_code == ExitCode.CHECK_FAILED
         assert "G05" in result.stdout
 
+    def test_the_message_names_a_flag_the_command_has(self, content: Path) -> None:
+        """It named ``--fix`` before there was one, which is how this got found."""
+        write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        (content / "GLOSSARY.md").write_text(
+            f"# Terms\n\n{glossary.TABLE_OPEN}\n\n{glossary.TABLE_CLOSE}\n", encoding="utf-8"
+        )
+        result = runner.invoke(app, ["glossary", "check"])
+        assert "--fix" in result.stdout
+        assert runner.invoke(app, ["glossary", "check", "--fix"]).exit_code == ExitCode.OK
+
+    def test_fix_writes_the_table_the_glossary_renders_to(self, content: Path) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        markdown = content / "GLOSSARY.md"
+        markdown.write_text(
+            f"# Terms\n\n{glossary.TABLE_OPEN}\n\n{glossary.TABLE_CLOSE}\n", encoding="utf-8"
+        )
+        runner.invoke(app, ["glossary", "check", "--fix"])
+        assert "khả lặp" in markdown.read_text(encoding="utf-8")
+        assert runner.invoke(app, ["glossary", "check"]).exit_code == ExitCode.OK
+
+    def test_fix_leaves_the_prose_around_the_table_alone(self, content: Path) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        markdown = content / "GLOSSARY.md"
+        markdown.write_text(
+            f"# Terms\n\nRead this first.\n\n{glossary.TABLE_OPEN}\n\n{glossary.TABLE_CLOSE}\n\n"
+            "## Judgment calls\n\nDrop the pronoun.\n",
+            encoding="utf-8",
+        )
+        runner.invoke(app, ["glossary", "check", "--fix"])
+        written = markdown.read_text(encoding="utf-8")
+        assert "Read this first." in written
+        assert "Drop the pronoun." in written
+
+    def test_fix_does_not_pretend_to_settle_a_collision(self, content: Path) -> None:
+        """``--fix`` is for the generated table. What the rows say is a decision."""
+        write_glossary(
+            content,
+            'version: 1\nterms:\n  - en: "bug"\n    vi: "lỗi"\n  - en: "mistake"\n    vi: "lỗi"\n',
+        )
+        result = runner.invoke(app, ["glossary", "check", "--fix"])
+        assert result.exit_code == ExitCode.CHECK_FAILED
+        assert "G-e" in result.stdout
+
     def test_a_missing_glossary_names_the_path(self, content: Path) -> None:
         """Neither the separator nor the wrapping is part of the message.
 
