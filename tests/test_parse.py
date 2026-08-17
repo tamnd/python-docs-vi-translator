@@ -123,10 +123,13 @@ class TestProperties:
 
 class TestTheUnicodeTable:
     def test_a_body_whose_own_lines_count_upwards_is_the_one_that_cannot_work(self) -> None:
-        """One entry in the corpus is a codepoint table whose lines begin 0, 1,
-        2, 3, 4. That is a numbered sequence, and no parser reading a line at a
-        time can tell it from an answer. It fails ``P03``, is retried, dies, and
-        is left in English, which is what the ladder is for."""
+        """A codepoint table in ``unicode.po`` has lines beginning 0, 1, 2, 3, 4.
+        That is a numbered sequence, and no parser reading a line at a time can
+        tell it from an answer. The real one survives, because it sits at entry 7
+        of its batch and its own numbers stop before 8, but that is a fact about
+        where batching happened to put it. Where the numbers do reach the index
+        being expected, as here, the entry fails ``P03``, is retried, dies and is
+        left in English, which is what the ladder is for."""
         answer = parse.parse("1 0 aaa\n1 bbb\n2 ccc", 2)
         assert answer.entries[2] == "ccc"
         assert answer.entries[1] != "0 aaa\n1 bbb\n2 ccc"
