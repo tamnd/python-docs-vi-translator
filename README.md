@@ -88,6 +88,8 @@ No key is ever written in a file. Routes name an environment variable and the va
 
 The route file lives in the user's config directory, never in a checkout, and holds no key of its own.
 
+The consequence is that a fresh shell has no key in it, and a health probe answers 200 without one because health needs no auth. Run `pydocvi doctor` before anything that spends calls. It names the variable that is not set and exits 3, and `fleet bench` now makes the same check itself rather than spending a route's worth of calls to discover it.
+
 ## On PEP 545
 
 Machine output does not satisfy PEP 545 and this project does not claim it does. What the tool produces is a fuzzy reference corpus. The path to docs.python.org runs through a person reading a string, agreeing with it, and submitting it through Transifex under the Documentation Contribution Agreement, and the tool's job is to save that person typing.

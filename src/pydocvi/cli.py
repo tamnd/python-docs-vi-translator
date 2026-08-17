@@ -8,6 +8,7 @@ enough to read in one screen.
 import asyncio
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, NoReturn
 
@@ -350,18 +351,28 @@ def fleet_bench(
     Every wall-clock estimate this tool prints comes from the report this
     writes. Without it the estimates are the design notes' aspirations, which
     were written before anything had run.
+
+    The key check is here rather than left to ``doctor`` because the first real
+    three-route run of this command was made in a shell that had no key in it.
+    Eighteen calls came back 401 in a little over a second each, and the command
+    exited 0 and wrote a report saying every route does 0.0 calls per hour. A
+    report of zeros is worse than no report, because the next estimate is
+    computed off it.
     """
     known = _routes()
+    if missing := routes.missing_keys(known):
+        console.print(f"[red]{', '.join(missing)} is not set in this shell[/red]")
+        raise typer.Exit(ExitCode.FLEET_UNREACHABLE)
+
     total = calls * len(known)
     if not yes:
         typer.confirm(f"{total} real calls across {len(known)} routes, continue?", abort=True)
 
-    results = asyncio.run(_bench(known, calls=calls, prompt=prompt))
-    for result in results:
-        console.print(
-            f"{result.route}: {result.successes}/{result.calls} in {result.seconds:.0f}s, "
-            f"{result.calls_per_hour:.1f} calls/hour at concurrency {result.concurrency}"
-        )
+    results = asyncio.run(_bench(known, calls=calls, prompt=prompt, say=_bench_line))
+
+    if not any(result.successes for result in results):
+        console.print("[red]no route completed a single call, nothing was measured[/red]")
+        raise typer.Exit(ExitCode.FLEET_UNREACHABLE)
 
     where = config.paths()
     where.reports.mkdir(parents=True, exist_ok=True)
@@ -371,9 +382,37 @@ def fleet_bench(
     console.print(f"wrote {target}")
 
 
-async def _bench(known: list[routes.Route], *, calls: int, prompt: str) -> list[fleet.Bench]:
+def _bench_line(result: fleet.Bench) -> None:
+    """One route's measurement, printed the moment that route is done."""
+    console.print(
+        f"{result.route}: {result.successes}/{result.calls} in {result.seconds:.0f}s, "
+        f"{result.calls_per_hour:.1f} calls/hour at concurrency {result.concurrency}"
+    )
+
+
+async def _bench(
+    known: list[routes.Route],
+    *,
+    calls: int,
+    prompt: str,
+    say: Callable[[fleet.Bench], None] = lambda _: None,
+) -> list[fleet.Bench]:
+    """Measure every route in turn, announcing each one as it finishes.
+
+    One route at a time, because two hosts measured at once share this machine's
+    uplink and the number stops being about the host. Announced as it finishes
+    rather than at the end, because a route here is a quarter of an hour and the
+    first real three-route run was killed during the third one. It had measured
+    two hosts by then and printed neither, which is a bad trade for one line of
+    code.
+    """
     async with Client() as client:
-        return [await fleet.bench(client, route, calls=calls, prompt=prompt) for route in known]
+        measured = []
+        for route in known:
+            result = await fleet.bench(client, route, calls=calls, prompt=prompt)
+            say(result)
+            measured.append(result)
+        return measured
 
 
 @fleet_app.command("trace")

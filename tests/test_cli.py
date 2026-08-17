@@ -296,6 +296,73 @@ class TestFleetCommands:
         result = runner.invoke(app, ["fleet", "bench"], input="n\n")
         assert result.exit_code != ExitCode.OK
 
+    def test_bench_checks_for_the_key_before_asking_to_spend_calls(
+        self, route_file: Path, commands: FakeRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The first real three-route run was made in a shell with no key in it.
+        Every call came back 401 in about a second."""
+        monkeypatch.delenv("CHATGPT_PROXY_KEY")
+        result = runner.invoke(app, ["fleet", "bench"])
+        assert result.exit_code == ExitCode.FLEET_UNREACHABLE
+        assert "CHATGPT_PROXY_KEY" in result.stdout
+        assert "continue?" not in result.stdout
+
+    def test_a_bench_that_measured_nothing_writes_no_report(
+        self,
+        route_file: Path,
+        commands: FakeRunner,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A report saying every route does 0.0 calls per hour is worse than no
+        report, because the next estimate is computed off it."""
+        nothing = [fleet.Bench(route="a", calls=6, failures=6, empty=0, seconds=4.0, concurrency=1)]
+        monkeypatch.setattr("pydocvi.cli._bench", _returning(nothing))
+        result = runner.invoke(app, ["fleet", "bench", "--calls", "6", "--yes"])
+        assert result.exit_code == ExitCode.FLEET_UNREACHABLE
+        assert "nothing was measured" in result.stdout
+        assert not (config.paths().reports / "fleet-bench.md").exists()
+
+    def test_each_route_is_reported_as_it_finishes(
+        self,
+        route_file: Path,
+        commands: FakeRunner,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A route is a quarter of an hour on this transport. The first real run
+        was killed during the third one, having measured two and printed neither."""
+        measured = [
+            fleet.Bench(route="first", calls=4, failures=0, empty=0, seconds=600.0, concurrency=1),
+            fleet.Bench(route="second", calls=4, failures=0, empty=0, seconds=300.0, concurrency=4),
+        ]
+        monkeypatch.setattr("pydocvi.cli._bench", _returning(measured))
+        result = runner.invoke(app, ["fleet", "bench", "--calls", "4", "--yes"])
+        assert result.exit_code == ExitCode.OK
+        assert result.stdout.index("first:") < result.stdout.index("second:")
+        assert result.stdout.index("second:") < result.stdout.index("wrote ")
+
+
+def _returning(results: list[fleet.Bench]) -> Callable[..., list[fleet.Bench]]:
+    """A stand-in for ``_bench`` that spends no calls and answers what it is given.
+
+    It calls ``say`` the way the real one does, one route at a time, because that
+    is the part of the contract the command depends on.
+    """
+
+    async def _stub(
+        known: object,
+        *,
+        calls: int,
+        prompt: str,
+        say: Callable[[fleet.Bench], None] = lambda _: None,
+    ) -> list[fleet.Bench]:
+        for result in results:
+            say(result)
+        return results
+
+    return _stub
+
 
 class TestDoctor:
     def test_a_fleet_that_is_answering_is_exit_zero(
