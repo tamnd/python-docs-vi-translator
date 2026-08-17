@@ -1,22 +1,27 @@
 import importlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Self
 
 import pytest
 from typer.testing import CliRunner
 
 import pydocvi
 from conftest import FAKE_KEY, FakeRunner
-from pydocvi import __version__, fleet
+from pydocvi import __version__, config, fleet, glossary, mine
 from pydocvi.catalog import segment_id
 from pydocvi.cli import ExitCode, app, main
+from pydocvi.client import Answer
 from pydocvi.fleet import Ran
 from pydocvi.queue import Job, Queue, Stage, State
+from pydocvi.routes import Route
 
 runner = CliRunner()
 
@@ -403,3 +408,372 @@ def test_version_falls_back_when_the_package_is_not_installed(
     finally:
         monkeypatch.undo()
         importlib.reload(pydocvi)
+
+
+@pytest.fixture
+def content(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A scratch content repo, which is where the glossary lives."""
+    where = tmp_path / "content"
+    where.mkdir()
+    monkeypatch.setenv("PYDOCVI_CONTENT", str(where))
+    return where
+
+
+def write_glossary(content: Path, text: str) -> Path:
+    target = content / "manifests" / "glossary.yaml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    return target
+
+
+class TestGlossaryMine:
+    def test_mining_writes_the_candidates_file(self, workspace: Path, content: Path) -> None:
+        result = runner.invoke(app, ["glossary", "mine", "--minimum", "1", "--limit", "5"])
+        assert result.exit_code == ExitCode.OK
+        assert (content / "manifests" / "glossary-candidates.yaml").exists()
+
+    def test_the_counts_are_printed_by_source(self, workspace: Path, content: Path) -> None:
+        result = runner.invoke(app, ["glossary", "mine", "--minimum", "1", "--limit", "5"])
+        assert "frequency" in result.stdout and "total" in result.stdout
+
+    def test_what_it_writes_reads_back(self, workspace: Path, content: Path) -> None:
+        runner.invoke(app, ["glossary", "mine", "--minimum", "1", "--limit", "5"])
+        text = (content / "manifests" / "glossary-candidates.yaml").read_text(encoding="utf-8")
+        assert mine.loads(text)
+
+    def test_no_upstream_is_a_failed_check_rather_than_a_traceback(
+        self, content: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PYDOCVI_UPSTREAM", "/nonexistent/upstream")
+        assert runner.invoke(app, ["glossary", "mine"]).exit_code == ExitCode.CHECK_FAILED
+
+
+class FakeCompletions:
+    """A client that answers every batch from a function of its prompt."""
+
+    def __init__(self, answer: Callable[[str], str]) -> None:
+        self.answer = answer
+        self.prompts: list[str] = []
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def complete(self, route: Route, prompt: str, *, system: str | None = None) -> Answer:
+        self.prompts.append(prompt)
+        return Answer(text=self.answer(prompt), route=route.name, model=route.model, seconds=1.0)
+
+
+def echo_renderings(prompt: str) -> str:
+    """Answer every numbered term with a plausible Vietnamese phrase."""
+    lines = []
+    for line in prompt.splitlines():
+        match = re.match(r"^(\d+)\. (.+)$", line)
+        if match:
+            lines.append(f"{match.group(1)}. {match.group(2)} = bản dịch")
+    return "\n".join(lines)
+
+
+@pytest.fixture
+def completions(monkeypatch: pytest.MonkeyPatch) -> FakeCompletions:
+    fake = FakeCompletions(echo_renderings)
+    monkeypatch.setattr("pydocvi.cli.Client", lambda: fake)
+    return fake
+
+
+class TestGlossaryCurate:
+    def test_curating_with_no_candidates_says_which_command_to_run(
+        self, workspace: Path, content: Path, route_file: Path
+    ) -> None:
+        result = runner.invoke(app, ["glossary", "curate", "--yes"])
+        assert result.exit_code == ExitCode.CHECK_FAILED
+        assert "glossary mine" in result.stdout.replace("\n", "")
+
+    def test_a_run_writes_the_proposal_and_not_the_glossary(
+        self,
+        workspace: Path,
+        content: Path,
+        route_file: Path,
+        completions: FakeCompletions,
+    ) -> None:
+        runner.invoke(app, ["glossary", "mine", "--minimum", "1", "--limit", "5"])
+        result = runner.invoke(app, ["glossary", "curate", "--yes"])
+        assert result.exit_code == ExitCode.OK
+        assert (content / "manifests" / "glossary-proposed.yaml").exists()
+        assert not (content / "manifests" / "glossary.yaml").exists()
+
+    def test_the_proposal_is_at_version_zero_because_nobody_has_read_it(
+        self,
+        workspace: Path,
+        content: Path,
+        route_file: Path,
+        completions: FakeCompletions,
+    ) -> None:
+        runner.invoke(app, ["glossary", "mine", "--minimum", "1", "--limit", "5"])
+        runner.invoke(app, ["glossary", "curate", "--yes"])
+        proposed = glossary.load(content / "manifests" / "glossary-proposed.yaml")
+        assert proposed.version == 0
+
+    def test_the_report_lands_under_work(
+        self,
+        workspace: Path,
+        content: Path,
+        route_file: Path,
+        completions: FakeCompletions,
+    ) -> None:
+        runner.invoke(app, ["glossary", "mine", "--minimum", "1", "--limit", "5"])
+        runner.invoke(app, ["glossary", "curate", "--yes"])
+        assert (workspace / "work" / "reports" / "glossary-curation.md").exists()
+
+    def test_take_limits_how_many_terms_are_asked_about(
+        self,
+        workspace: Path,
+        content: Path,
+        route_file: Path,
+        completions: FakeCompletions,
+    ) -> None:
+        runner.invoke(app, ["glossary", "mine", "--minimum", "1", "--limit", "20"])
+        runner.invoke(app, ["glossary", "curate", "--yes", "--take", "2", "--batch", "1"])
+        assert len(completions.prompts) == 2
+
+
+class TestARunThatAcceptedNothing:
+    """The fleet went down part way through a real run and every call failed.
+
+    The proposal was written anyway, so 873 reviewed rows became an empty file
+    and the only copy of that work was gone. A run with nothing in it must not
+    be able to do that.
+    """
+
+    @pytest.fixture
+    def failing(self, monkeypatch: pytest.MonkeyPatch) -> FakeCompletions:
+        def refuse(prompt: str) -> str:
+            raise RuntimeError("connection reset")
+
+        fake = FakeCompletions(refuse)
+        monkeypatch.setattr("pydocvi.cli.Client", lambda: fake)
+        return fake
+
+    def test_the_earlier_proposal_is_left_alone(
+        self, workspace: Path, content: Path, route_file: Path, failing: FakeCompletions
+    ) -> None:
+        runner.invoke(app, ["glossary", "mine", "--minimum", "1", "--limit", "5"])
+        earlier = content / "manifests" / "glossary-proposed.yaml"
+        earlier.parent.mkdir(parents=True, exist_ok=True)
+        earlier.write_text(
+            'version: 0\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n', encoding="utf-8"
+        )
+        runner.invoke(app, ["glossary", "curate", "--yes"])
+        assert glossary.load(earlier).terms[0].en == "iterable"
+
+    def test_it_exits_as_an_unreachable_fleet_rather_than_a_success(
+        self, workspace: Path, content: Path, route_file: Path, failing: FakeCompletions
+    ) -> None:
+        runner.invoke(app, ["glossary", "mine", "--minimum", "1", "--limit", "5"])
+        result = runner.invoke(app, ["glossary", "curate", "--yes"])
+        assert result.exit_code == ExitCode.FLEET_UNREACHABLE
+
+    def test_it_says_the_proposal_was_left_as_it_was(
+        self, workspace: Path, content: Path, route_file: Path, failing: FakeCompletions
+    ) -> None:
+        runner.invoke(app, ["glossary", "mine", "--minimum", "1", "--limit", "5"])
+        result = runner.invoke(app, ["glossary", "curate", "--yes"])
+        assert "left as it was" in result.stdout.replace("\n", "")
+
+    def test_the_report_is_still_written_because_a_failure_is_worth_a_record(
+        self, workspace: Path, content: Path, route_file: Path, failing: FakeCompletions
+    ) -> None:
+        runner.invoke(app, ["glossary", "mine", "--minimum", "1", "--limit", "5"])
+        runner.invoke(app, ["glossary", "curate", "--yes"])
+        assert (workspace / "work" / "reports" / "glossary-curation.md").exists()
+
+    def test_no_proposal_is_created_where_there_was_none(
+        self, workspace: Path, content: Path, route_file: Path, failing: FakeCompletions
+    ) -> None:
+        runner.invoke(app, ["glossary", "mine", "--minimum", "1", "--limit", "5"])
+        runner.invoke(app, ["glossary", "curate", "--yes"])
+        assert not (content / "manifests" / "glossary-proposed.yaml").exists()
+
+
+class TestGlossaryCheck:
+    def test_a_clean_glossary_passes(self, content: Path) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        result = runner.invoke(app, ["glossary", "check"])
+        assert result.exit_code == ExitCode.OK
+        assert "1 terms" in result.stdout
+
+    def test_a_collision_fails_and_names_the_rule(self, content: Path) -> None:
+        write_glossary(
+            content,
+            'version: 1\nterms:\n  - en: "bug"\n    vi: "lỗi"\n  - en: "mistake"\n    vi: "lỗi"\n',
+        )
+        result = runner.invoke(app, ["glossary", "check"])
+        assert result.exit_code == ExitCode.CHECK_FAILED
+        assert "G-e" in result.stdout
+
+    def test_a_markdown_table_that_disagrees_fails(self, content: Path) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        (content / "GLOSSARY.md").write_text(
+            f"# Terms\n\n{glossary.TABLE_OPEN}\n\n{glossary.TABLE_CLOSE}\n", encoding="utf-8"
+        )
+        result = runner.invoke(app, ["glossary", "check"])
+        assert result.exit_code == ExitCode.CHECK_FAILED
+        assert "G05" in result.stdout
+
+    def test_the_message_names_a_flag_the_command_has(self, content: Path) -> None:
+        """It named ``--fix`` before there was one, which is how this got found."""
+        write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        (content / "GLOSSARY.md").write_text(
+            f"# Terms\n\n{glossary.TABLE_OPEN}\n\n{glossary.TABLE_CLOSE}\n", encoding="utf-8"
+        )
+        result = runner.invoke(app, ["glossary", "check"])
+        assert "--fix" in result.stdout
+        assert runner.invoke(app, ["glossary", "check", "--fix"]).exit_code == ExitCode.OK
+
+    def test_fix_writes_the_table_the_glossary_renders_to(self, content: Path) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        markdown = content / "GLOSSARY.md"
+        markdown.write_text(
+            f"# Terms\n\n{glossary.TABLE_OPEN}\n\n{glossary.TABLE_CLOSE}\n", encoding="utf-8"
+        )
+        runner.invoke(app, ["glossary", "check", "--fix"])
+        assert "khả lặp" in markdown.read_text(encoding="utf-8")
+        assert runner.invoke(app, ["glossary", "check"]).exit_code == ExitCode.OK
+
+    def test_fix_leaves_the_prose_around_the_table_alone(self, content: Path) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        markdown = content / "GLOSSARY.md"
+        markdown.write_text(
+            f"# Terms\n\nRead this first.\n\n{glossary.TABLE_OPEN}\n\n{glossary.TABLE_CLOSE}\n\n"
+            "## Judgment calls\n\nDrop the pronoun.\n",
+            encoding="utf-8",
+        )
+        runner.invoke(app, ["glossary", "check", "--fix"])
+        written = markdown.read_text(encoding="utf-8")
+        assert "Read this first." in written
+        assert "Drop the pronoun." in written
+
+    def test_fix_does_not_pretend_to_settle_a_collision(self, content: Path) -> None:
+        """``--fix`` is for the generated table. What the rows say is a decision."""
+        write_glossary(
+            content,
+            'version: 1\nterms:\n  - en: "bug"\n    vi: "lỗi"\n  - en: "mistake"\n    vi: "lỗi"\n',
+        )
+        result = runner.invoke(app, ["glossary", "check", "--fix"])
+        assert result.exit_code == ExitCode.CHECK_FAILED
+        assert "G-e" in result.stdout
+
+    def test_a_missing_glossary_names_the_path(self, content: Path) -> None:
+        """Neither the separator nor the wrapping is part of the message.
+
+        A temporary directory is long enough that the console wraps the path on
+        some runners and not others, and Windows writes the separator the other
+        way round. Both of those failed this assertion while the command was
+        doing exactly the right thing.
+        """
+        result = runner.invoke(app, ["glossary", "check"])
+        assert result.exit_code == ExitCode.CHECK_FAILED
+        printed = result.stdout.replace("\n", "").replace("\\", "/")
+        assert str(config.paths().glossary).replace("\\", "/") in printed
+
+
+class TestGlossaryShow:
+    def test_the_whole_table_prints(self, content: Path) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        assert "iterable" in runner.invoke(app, ["glossary", "show"]).stdout
+
+    def test_one_term_prints(self, content: Path) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        assert runner.invoke(app, ["glossary", "show", "iterable"]).exit_code == ExitCode.OK
+
+    def test_a_term_that_is_not_there_is_a_failed_check(self, content: Path) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        assert runner.invoke(app, ["glossary", "show", "nope"]).exit_code == ExitCode.CHECK_FAILED
+
+
+class TestGlossaryBump:
+    def test_promoting_raises_the_version_and_writes_the_glossary(self, content: Path) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        (content / "manifests" / "glossary-proposed.yaml").write_text(
+            'version: 0\nterms:\n  - en: "decorator"\n    vi: "decorator"\n    keep_en: true\n',
+            encoding="utf-8",
+        )
+        result = runner.invoke(app, ["glossary", "bump", "--yes"])
+        assert result.exit_code == ExitCode.OK
+        assert glossary.load(content / "manifests" / "glossary.yaml").version == 2
+
+    def test_the_old_version_is_archived_so_diff_has_two_sides(self, content: Path) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        (content / "manifests" / "glossary-proposed.yaml").write_text(
+            'version: 0\nterms:\n  - en: "decorator"\n    vi: "decorator"\n    keep_en: true\n',
+            encoding="utf-8",
+        )
+        runner.invoke(app, ["glossary", "bump", "--yes"])
+        assert (content / "manifests" / "glossary" / "v1.yaml").exists()
+
+    def test_the_proposal_is_consumed(self, content: Path) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        (content / "manifests" / "glossary-proposed.yaml").write_text(
+            'version: 0\nterms:\n  - en: "decorator"\n    vi: "decorator"\n    keep_en: true\n',
+            encoding="utf-8",
+        )
+        runner.invoke(app, ["glossary", "bump", "--yes"])
+        assert not (content / "manifests" / "glossary-proposed.yaml").exists()
+
+    def test_the_markdown_table_is_regenerated(self, content: Path) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        (content / "GLOSSARY.md").write_text(
+            f"# Terms\n\n{glossary.TABLE_OPEN}\n\n{glossary.TABLE_CLOSE}\n", encoding="utf-8"
+        )
+        (content / "manifests" / "glossary-proposed.yaml").write_text(
+            'version: 0\nterms:\n  - en: "decorator"\n    vi: "decorator"\n    keep_en: true\n',
+            encoding="utf-8",
+        )
+        runner.invoke(app, ["glossary", "bump", "--yes"])
+        assert "decorator" in (content / "GLOSSARY.md").read_text(encoding="utf-8")
+
+    def test_a_proposal_that_collides_is_refused_before_anything_is_written(
+        self, content: Path
+    ) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "bug"\n    vi: "lỗi"\n')
+        (content / "manifests" / "glossary-proposed.yaml").write_text(
+            'version: 0\nterms:\n  - en: "mistake"\n    vi: "lỗi"\n', encoding="utf-8"
+        )
+        result = runner.invoke(app, ["glossary", "bump", "--yes"])
+        assert result.exit_code == ExitCode.CHECK_FAILED
+        assert glossary.load(content / "manifests" / "glossary.yaml").version == 1
+
+    def test_promoting_nothing_new_does_not_move_the_version(self, content: Path) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        (content / "manifests" / "glossary-proposed.yaml").write_text(
+            'version: 0\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n', encoding="utf-8"
+        )
+        result = runner.invoke(app, ["glossary", "bump", "--yes"])
+        assert "nothing to promote" in result.stdout
+
+    def test_no_proposal_says_which_command_to_run(self, content: Path) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        result = runner.invoke(app, ["glossary", "bump", "--yes"])
+        assert result.exit_code == ExitCode.CHECK_FAILED
+        assert "glossary curate" in result.stdout.replace("\n", "")
+
+
+class TestGlossaryDiff:
+    def test_what_moved_between_two_versions_prints(self, content: Path) -> None:
+        write_glossary(content, 'version: 2\nterms:\n  - en: "iterable"\n    vi: "lặp được"\n')
+        archive = content / "manifests" / "glossary"
+        archive.mkdir(parents=True, exist_ok=True)
+        (archive / "v1.yaml").write_text(
+            'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n', encoding="utf-8"
+        )
+        result = runner.invoke(app, ["glossary", "diff", "1", "2"])
+        assert result.exit_code == ExitCode.OK
+        assert "khả lặp -> lặp được" in result.stdout
+
+    def test_a_version_nobody_archived_names_the_file(self, content: Path) -> None:
+        write_glossary(content, 'version: 2\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        result = runner.invoke(app, ["glossary", "diff", "1", "2"])
+        assert result.exit_code == ExitCode.CHECK_FAILED
+        assert "v1.yaml" in result.stdout.replace("\n", "")

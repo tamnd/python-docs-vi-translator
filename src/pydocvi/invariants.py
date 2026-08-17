@@ -185,9 +185,19 @@ def _p08(msgstr: str) -> Violation | None:
     failure it exists for, which is a batch that came back in English.
     """
     stripped = msgstr.strip()
-    if len(stripped) <= _SHORT or _DIACRITICS.search(_decompose(stripped)):
+    if len(stripped) <= _SHORT or vietnamese(stripped):
         return None
     return Violation(rule="P08", detail=f"{len(stripped)} characters with no Vietnamese diacritic")
+
+
+def vietnamese(text: str) -> bool:
+    """Whether a string carries evidence of having been typed in Vietnamese.
+
+    Public because ``G-c`` in :mod:`pydocvi.curate` asks the same question of a
+    glossary rendering, and two definitions of "is this Vietnamese" would drift
+    until a term the audit accepts is one the curator rejects.
+    """
+    return bool(_DIACRITICS.search(_decompose(text)))
 
 
 def _decompose(text: str) -> str:
