@@ -10,6 +10,11 @@ from pathlib import Path
 
 ENV_PREFIX = "PYDOCVI_"
 
+#: The only language this tool translates into. Named rather than assumed,
+#: because ``pydocvi audit --lang`` exists in the runbook and a flag that
+#: silently ignored what it was given would be worse than one that refuses.
+LANGUAGE = "vi"
+
 #: The Transifex mirror. Read only, always. A commit pushed here is overwritten
 #: within the hour, and more to the point, PEP 545 wants a person to have agreed
 #: with a string before it lands there.

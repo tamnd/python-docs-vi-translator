@@ -19,6 +19,7 @@ from rich.table import Table
 from pydocvi import (
     __version__,
     apply,
+    audit,
     batch,
     catalog,
     classify,
@@ -1242,6 +1243,110 @@ def glossary_bump(
         where.glossary_markdown.write_text(glossary.render(markdown, merged), encoding="utf-8")
         console.print(f"regenerated the table in {where.glossary_markdown}")
     where.proposal.unlink()
+
+
+@app.command(name="audit")
+def audit_command(
+    only: Annotated[
+        str | None,
+        typer.Option("--only", help="Check ids, group names or prefixes, comma-separated."),
+    ] = None,
+    skip: Annotated[
+        str | None, typer.Option("--skip", help="The same, for checks to leave out.")
+    ] = None,
+    lang: Annotated[str, typer.Option("--lang", help="Which language to audit.")] = config.LANGUAGE,
+    report: Annotated[
+        Path | None, typer.Option("--report", help="Write the Markdown report here.")
+    ] = None,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Print the finding list on stdout instead of a table.")
+    ] = False,
+    fail_soft: Annotated[
+        bool, typer.Option("--fail-soft", help="Let a soft check fail the run too.")
+    ] = False,
+    branch: Annotated[str, typer.Option(help="Which version the catalogs are of.")] = (
+        sync.DEFAULT_BRANCH
+    ),
+) -> None:
+    """Run every check over the committed corpus.
+
+    Exit 0 iff every hard check passes. This is expected to be red for a long
+    time and that is the job: the audit is the executable form of every quality
+    claim the project makes, so it goes green when the corpus is finished and
+    not before.
+
+    Nothing here calls a model, opens a socket or reads a key. That is what
+    makes it fast enough to run on every push and what makes a green run worth
+    believing without knowing which route happened to answer that day.
+    """
+    if lang != config.LANGUAGE:
+        console.print(f"[red]this tool only translates into {config.LANGUAGE}[/red]")
+        raise typer.Exit(ExitCode.USAGE)
+    where = config.paths()
+    if not where.content.exists():
+        console.print(f"[red]no content repo at {where.content}[/red]")
+        raise typer.Exit(ExitCode.USAGE)
+
+    started = time.monotonic()
+    corpus = audit.assemble(where, branch=branch)
+    try:
+        result = audit.run(corpus, only=_names(only), skip=_names(skip), fail_soft=fail_soft)
+    except audit.UnknownCheckError as error:
+        console.print(f"[red]{error}[/red]")
+        raise typer.Exit(ExitCode.USAGE) from error
+
+    if report is not None:
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(audit.markdown(result), encoding="utf-8")
+    if as_json:
+        typer.echo(result.as_json(), nl=False)
+    else:
+        _audit_table(result, corpus, elapsed=time.monotonic() - started)
+    if not result.ok:
+        raise typer.Exit(ExitCode.CHECK_FAILED)
+
+
+def _names(given: str | None) -> list[str]:
+    """A comma-separated option as a list, with the empty pieces dropped."""
+    if given is None:
+        return []
+    return [one.strip() for one in given.split(",") if one.strip()]
+
+
+def _audit_table(report: audit.Report, corpus: audit.Corpus, *, elapsed: float) -> None:
+    """One row per failing check, then the verdict.
+
+    Only the failing ones. A table of forty-one rows where thirty-five say zero
+    is a table whose useful part is below the fold, and the count of what passed
+    is on the last line for anyone who wants it.
+    """
+    failing = report.failing()
+    if failing:
+        table = Table(title=None, box=None, pad_edge=False)
+        table.add_column("check")
+        table.add_column("hard")
+        table.add_column("findings", justify="right")
+        table.add_column("what it checks")
+        for one in failing:
+            colour = "red" if one.check.hard else "yellow"
+            table.add_row(
+                f"[{colour}]{one.check.id}[/{colour}]",
+                "yes" if one.check.hard else "no",
+                f"{len(one.findings):,}",
+                one.check.title,
+            )
+        console.print(table)
+
+    passed = len(report.results) - len(failing)
+    console.print(
+        f"{len(corpus.catalogs):,} catalogs, {audit.plural(len(report.results), 'check')}, "
+        f"{passed} passed, {audit.plural(len(report.findings), 'finding')}, {elapsed:.1f}s"
+    )
+    if report.ok:
+        console.print("[green]every hard check passes[/green]")
+        return
+    hard = report.failing(hard=True)
+    console.print(f"[red]{audit.plural(len(hard), 'hard check')} failing[/red]")
 
 
 def main() -> NoReturn:

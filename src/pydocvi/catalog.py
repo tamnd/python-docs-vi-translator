@@ -14,7 +14,7 @@ import hashlib
 import re
 import textwrap
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 type SegmentId = str
@@ -99,6 +99,14 @@ class Entry:
     ``raw`` holds the physical lines exactly as they appeared in the file. It is
     dropped the moment a value changes, which is what makes an untouched entry
     round-trip exactly and a rewritten one get our own formatting.
+
+    ``line`` is where the block started, counting from 1, and 0 for an entry
+    that was never read from a file. The audit needs it: a finding that cannot
+    say which line it is about is a finding a reviewer has to go and search
+    for, and a reviewer with 87 008 entries skips those. It takes no part in
+    equality, because where a string sits in a file is not part of what the
+    string is, and two runs that move an entry down by a paragraph have not
+    changed it.
     """
 
     msgid: str
@@ -107,6 +115,7 @@ class Entry:
     comments: tuple[str, ...] = ()
     flags: tuple[str, ...] = ()
     raw: tuple[str, ...] | None = None
+    line: int = field(default=0, compare=False)
 
     @property
     def id(self) -> SegmentId:
@@ -283,15 +292,18 @@ def parse(text: str, *, path: Path | None = None) -> Catalog:
 
     entries: list[Entry] = []
     block: list[str] = []
-    for line in lines:
+    start = 1
+    for number, line in enumerate(lines, start=1):
         if line.strip() == "":
             if block:
-                entries.append(_parse_block(block, where))
+                entries.append(_parse_block(block, where, line=start))
                 block = []
             continue
+        if not block:
+            start = number
         block.append(line)
     if block:
-        entries.append(_parse_block(block, where))
+        entries.append(_parse_block(block, where, line=start))
 
     if not entries:
         raise CatalogError(f"{where}: no entries")
@@ -303,28 +315,28 @@ def parse(text: str, *, path: Path | None = None) -> Catalog:
     )
 
 
-def _parse_block(block: Sequence[str], where: Path) -> Entry:
+def _parse_block(block: Sequence[str], where: Path, *, line: int = 0) -> Entry:
     comments: list[str] = []
     flags: tuple[str, ...] = ()
     fields: dict[str, str] = {}
     current: str | None = None
 
-    for line in block:
-        if line.startswith("#"):
+    for text in block:
+        if text.startswith("#"):
             if current is not None:
                 raise CatalogError(f"{where}: comment after a value in {block[0]!r}")
-            match = _FLAG_LINE.match(line)
+            match = _FLAG_LINE.match(text)
             if match:
                 flags = tuple(f.strip() for f in match.group(1).split(",") if f.strip())
             else:
-                comments.append(line)
+                comments.append(text)
             continue
-        if line.startswith('"'):
+        if text.startswith('"'):
             if current is None:
-                raise CatalogError(f"{where}: continuation line with no keyword: {line!r}")
-            fields[current] += unescape(line[1:-1])
+                raise CatalogError(f"{where}: continuation line with no keyword: {text!r}")
+            fields[current] += unescape(text[1:-1])
             continue
-        keyword, _, rest = line.partition(" ")
+        keyword, _, rest = text.partition(" ")
         if keyword not in {"msgid", "msgstr", "msgctxt"}:
             raise CatalogError(f"{where}: unsupported keyword {keyword!r}")
         current = keyword
@@ -339,6 +351,7 @@ def _parse_block(block: Sequence[str], where: Path) -> Entry:
         comments=tuple(comments),
         flags=flags,
         raw=tuple(block),
+        line=line,
     )
 
 

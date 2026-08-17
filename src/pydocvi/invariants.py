@@ -36,7 +36,11 @@ _DIACRITICS = re.compile(r"[̀-ͯ]|đ", re.IGNORECASE)
 
 #: Below this many characters, a diacritic-free rendering is ordinary rather
 #: than suspicious. "API", "Unicode" and "TCP" are the translation.
-_SHORT = 24
+#:
+#: Public because ``L01`` in the audit asks the same question of a committed
+#: catalog, and a second floor would mean a string this rule calls ordinary
+#: and that one calls English.
+SHORT = 24
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -137,21 +141,24 @@ def _p04(msgid: str, msgstr: str) -> Violation | None:
     end in a newline. Losing one is invisible in a diff viewer and shows up as a
     word welded to the next one in the rendered page.
     """
-    for edge, get in (("leading", _leading), ("trailing", _trailing)):
-        if get(msgid) != get(msgstr):
+    source, translation = edges(msgid), edges(msgstr)
+    for index, edge in enumerate(("leading", "trailing")):
+        if source[index] != translation[index]:
             return Violation(
                 rule="P04",
-                detail=f"{edge} whitespace {get(msgid)!r} became {get(msgstr)!r}",
+                detail=f"{edge} whitespace {source[index]!r} became {translation[index]!r}",
             )
     return None
 
 
-def _leading(text: str) -> str:
-    return text[: len(text) - len(text.lstrip())]
+def edges(text: str) -> tuple[str, str]:
+    """The whitespace before and after a string.
 
-
-def _trailing(text: str) -> str:
-    return text[len(text.rstrip()) :]
+    Public because the audit checks the same property over a committed catalog
+    and a second definition of "edge whitespace" is a second definition that can
+    drift from this one.
+    """
+    return text[: len(text) - len(text.lstrip())], text[len(text.rstrip()) :]
 
 
 def _p05(msgid: str, msgstr: str) -> Violation | None:
@@ -193,7 +200,7 @@ def _p08(msgstr: str) -> Violation | None:
     failure it exists for, which is a batch that came back in English.
     """
     stripped = msgstr.strip()
-    if len(stripped) <= _SHORT or vietnamese(stripped):
+    if len(stripped) <= SHORT or vietnamese(stripped):
         return None
     return Violation(rule="P08", detail=f"{len(stripped)} characters with no Vietnamese diacritic")
 
