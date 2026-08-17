@@ -3,7 +3,16 @@ import pytest
 from conftest import FAKE_KEY, FakeClient, FakeClock, FakeRunner, make_route
 from pydocvi import fleet as fleetmod
 from pydocvi.client import FleetError
-from pydocvi.fleet import Bench, Diagnosis, Fleet, Ran, Tunnel, bench_markdown, hours_for
+from pydocvi.fleet import (
+    Bench,
+    Diagnosis,
+    Fleet,
+    Liveness,
+    Ran,
+    Tunnel,
+    bench_markdown,
+    hours_for,
+)
 
 LSOF = "lsof -t -i @127.0.0.1"
 HEALTH = "curl"
@@ -195,7 +204,7 @@ class TestDiagnosis:
             tunnels=[_tunnel("a", up=True), _tunnel("b", up=False)], missing_keys=[], cooling=[]
         )
         assert diagnosis.healthy
-        assert diagnosis.summary == "1 of 2 routes answering"
+        assert diagnosis.summary == "1 of 2 routes answering health"
 
     def test_a_missing_key_is_not_healthy_however_many_tunnels_are_up(self) -> None:
         diagnosis = Diagnosis(
@@ -211,6 +220,115 @@ class TestDiagnosis:
         diagnosis = Diagnosis(tunnels=[_tunnel("a", up=False)], missing_keys=[], cooling=[])
         assert not diagnosis.healthy
         assert "no route answers" in diagnosis.summary
+
+    def test_a_healthy_route_that_completes_nothing_is_not_healthy(self) -> None:
+        """The failure this whole check exists for. server2 answered health with
+        200 for an entire afternoon and never finished a single completion, and
+        doctor kept saying a run could start."""
+        diagnosis = Diagnosis(
+            tunnels=[_tunnel("a", up=True)],
+            missing_keys=[],
+            cooling=[],
+            answered=[Liveness(route="a", up=False, detail="nothing within 120s")],
+        )
+        assert not diagnosis.healthy
+        assert "none of them completes a call" in diagnosis.summary
+
+    def test_the_completion_is_what_counts_when_both_were_asked(self) -> None:
+        diagnosis = Diagnosis(
+            tunnels=[_tunnel("a", up=True), _tunnel("b", up=True)],
+            missing_keys=[],
+            cooling=[],
+            answered=[
+                Liveness(route="a", up=True, seconds=31.0),
+                Liveness(route="b", up=False, detail="nothing within 120s"),
+            ],
+        )
+        assert diagnosis.healthy
+        assert diagnosis.summary == "1 of 2 routes completing calls"
+
+    def test_a_missing_key_outranks_a_route_that_answered(self) -> None:
+        diagnosis = Diagnosis(
+            tunnels=[_tunnel("a", up=True)],
+            missing_keys=["CHATGPT_PROXY_KEY"],
+            cooling=[],
+            answered=[Liveness(route="a", up=True)],
+        )
+        assert not diagnosis.healthy
+
+
+@pytest.mark.asyncio(loop_scope="function")
+class TestLiveness:
+    async def test_a_route_that_answers_is_up(self) -> None:
+        result = await fleetmod.alive(FakeClient(["ready"], seconds=31.0), make_route("a"))
+        assert result.up
+        assert result.seconds == 31.0
+        assert str(result) == "a: answered in 31s"
+
+    async def test_the_prompt_is_one_a_lost_session_cannot_answer_from_cache(self) -> None:
+        client = FakeClient(["ready"])
+        await fleetmod.alive(client, make_route("a"))
+        assert client.calls == [("a", fleetmod.LIVENESS_PROMPT)]
+
+    async def test_a_host_that_never_answers_is_down_rather_than_hanging(self) -> None:
+        """150 seconds, no bytes and no status is what server2 does, and the
+        client's own timeout is twenty minutes because that is right for a batch
+        of forty entries and wrong for a person waiting at a prompt."""
+        result = await fleetmod.alive(
+            FakeClient(["ready"], delay=5.0), make_route("a"), timeout=0.01
+        )
+        assert not result.up
+        assert result.detail == "nothing within 0s"
+
+    async def test_an_empty_answer_is_not_alive(self) -> None:
+        """200 with nothing in it is an outcome the client tolerates, because on
+        this transport it is common. It is still not a host to hand work to."""
+        result = await fleetmod.alive(FakeClient([""]), make_route("a"))
+        assert not result.up
+        assert result.detail == "answered with nothing"
+
+    async def test_a_fleet_error_is_reported_rather_than_raised(self) -> None:
+        """doctor asks every route, so one dead host must not stop the others
+        being asked."""
+        result = await fleetmod.alive(FakeClient([FleetError("a: HTTP 502")]), make_route("a"))
+        assert not result.up
+        assert "HTTP 502" in result.detail
+
+    async def test_a_key_in_the_failure_never_reaches_the_report(self) -> None:
+        """The keys here are shared across hosts, so one of them in one pasted
+        terminal is one of them everywhere."""
+        result = await fleetmod.alive(
+            FakeClient([FleetError(f"a: rejected {FAKE_KEY}")]), make_route("a")
+        )
+        assert FAKE_KEY not in result.detail
+        assert "***" in result.detail
+
+    async def test_the_model_that_answered_is_reported_when_it_is_not_the_one_asked_for(
+        self,
+    ) -> None:
+        """Every provenance comment a run writes names a model. This fleet's
+        proxy serves one model whatever the route file asks for, and 85 000
+        comments naming the wrong one is a record of something that did not
+        happen."""
+        result = await fleetmod.alive(
+            FakeClient(["ready"], served="gpt-5-6-mini"), make_route("a", model="gpt-5")
+        )
+        assert result.substituted
+        assert "served by gpt-5-6-mini" in str(result)
+
+    async def test_a_host_serving_what_was_asked_for_says_nothing_about_it(self) -> None:
+        result = await fleetmod.alive(
+            FakeClient(["ready"], served="gpt-5"), make_route("a", model="gpt-5")
+        )
+        assert not result.substituted
+        assert "served by" not in str(result)
+
+    async def test_a_host_that_names_no_model_is_taken_at_the_route_file_s_word(self) -> None:
+        """Silence is not evidence of substitution, and a diagnostic that cried
+        wolf on every host without usage reporting would be ignored."""
+        result = await fleetmod.alive(FakeClient(["ready"]), make_route("a", model="gpt-5"))
+        assert result.served == "gpt-5"
+        assert not result.substituted
 
 
 class TestEstimates:

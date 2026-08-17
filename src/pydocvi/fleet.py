@@ -15,8 +15,9 @@ import asyncio
 import logging
 import shlex
 import subprocess
+import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Protocol, Self
 
 from pydocvi.client import Clock, Completions, FleetError, RealClock, redact
@@ -35,6 +36,17 @@ SSH_OPTIONS = (
     "-o",
     "BatchMode=yes",
 )
+
+#: The smallest thing that still needs a browser session behind it to answer.
+#: Not "hello", because a proxy that has lost its session sometimes replies to a
+#: greeting out of whatever it has cached and to nothing else.
+LIVENESS_PROMPT = "Reply with the single word: ready."
+
+#: How long to wait for that one word before calling the route dead. A working
+#: host on this fleet answers it in twenty to sixty seconds. The route's own
+#: timeout is twenty minutes, which is right for a batch of forty entries and
+#: useless for a question a person is standing in front of.
+LIVENESS_TIMEOUT = 120.0
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -141,11 +153,15 @@ class Fleet:
         return [self._tunnel(route, up=self._listening(route.local_port)) for route in self.routes]
 
     def probe(self, route: Route) -> Tunnel:
-        """Whether anything answers ``/v1/health`` through the forward.
+        """Whether the route answers ``/v1/health`` through the forward.
 
         Deliberately curl rather than httpx: ``probe`` has to work when the
         Python side is what is broken, and a diagnostic that shares its code
         with the thing being diagnosed is not a diagnostic.
+
+        Cheap and weak. Passing means the listener is up and the tunnel carries
+        traffic, and nothing more, so :func:`alive` exists for the question a
+        person is actually asking.
         """
         ran = self.runner.run(
             [
@@ -220,14 +236,30 @@ class Diagnosis:
     missing_keys: list[str]
     cooling: list[str]
 
+    #: What :func:`alive` found, when it was run. Empty means it was not, and
+    #: the verdict then rests on health alone, which is the weaker question.
+    answered: list[Liveness] = field(default_factory=list)
+
     @property
     def answering(self) -> list[Tunnel]:
         return [tunnel for tunnel in self.tunnels if tunnel.up]
 
     @property
+    def live(self) -> list[Liveness]:
+        return [result for result in self.answered if result.up]
+
+    @property
     def healthy(self) -> bool:
-        """One route answering is enough to start a run."""
-        return bool(self.answering) and not self.missing_keys
+        """One route answering is enough to start a run.
+
+        Answering means having answered a completion where that was asked, and
+        having answered ``/v1/health`` where it was not. A host that passes the
+        second and fails the first is the failure this whole check exists for,
+        so where both numbers are in hand the completion is the one that counts.
+        """
+        if self.missing_keys:
+            return False
+        return bool(self.live) if self.answered else bool(self.answering)
 
     @property
     def summary(self) -> str:
@@ -237,7 +269,99 @@ class Diagnosis:
             return "no routes configured"
         if not self.answering:
             return "no route answers, every tunnel is down or the hosts are not serving"
-        return f"{len(self.answering)} of {len(self.tunnels)} routes answering"
+        if not self.answered:
+            return f"{len(self.answering)} of {len(self.tunnels)} routes answering health"
+        if not self.live:
+            return (
+                f"{len(self.answering)} of {len(self.tunnels)} routes answer health "
+                "and none of them completes a call"
+            )
+        return f"{len(self.live)} of {len(self.answered)} routes completing calls"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Liveness:
+    """Whether one route answered a real completion, and what answered it."""
+
+    route: str
+    up: bool
+    seconds: float = 0.0
+    served: str = ""
+    asked: str = ""
+    detail: str = ""
+
+    @property
+    def substituted(self) -> bool:
+        """Whether the host served a different model from the one asked for.
+
+        Not a failure. It is worth saying out loud because every provenance
+        comment a run writes names a model, and a route file that asks for one
+        model while the host serves another turns 85 000 of those comments into
+        a record of something that did not happen.
+        """
+        return bool(self.served) and bool(self.asked) and self.served != self.asked
+
+    def __str__(self) -> str:
+        if not self.up:
+            return f"{self.route}: no answer, {self.detail}"
+        served = f", served by {self.served}" if self.substituted else ""
+        return f"{self.route}: answered in {self.seconds:.0f}s{served}"
+
+
+async def alive(
+    client: Completions,
+    route: Route,
+    *,
+    prompt: str = LIVENESS_PROMPT,
+    timeout: float = LIVENESS_TIMEOUT,
+) -> Liveness:
+    """Whether the route will actually answer a completion.
+
+    The check that had to exist. ``server2`` answers ``/v1/health`` with 200 and
+    then never answers a completion at all: 150 seconds, no bytes, no status.
+    Health passed it, ``doctor`` passed it, and a run would have kept handing it
+    work for as long as it kept saying 200. The listener and the browser session
+    behind it are two different things and only one of them is what a job needs.
+
+    So this goes through the client a job goes through, rather than through curl
+    the way :meth:`Fleet.probe` does. That is the opposite choice from the one
+    ``probe`` makes and for the opposite reason: ``probe`` asks whether the
+    plumbing works and must not share code with the plumbing, this asks whether
+    a job would get an answer and there is no way to ask that except by being a
+    job. Sharing the transport is also what lets it report the model that
+    answered, which on this fleet is not the model the route file asks for.
+
+    One attempt, not the client's three. A dead session fails the same way three
+    times and a diagnostic that takes an hour to say so is not one.
+    """
+    started = time.monotonic()
+    try:
+        async with asyncio.timeout(timeout):
+            answer = await client.complete(replace(route, timeout=timeout), prompt)
+    except TimeoutError:
+        return Liveness(
+            route=route.name,
+            up=False,
+            seconds=time.monotonic() - started,
+            asked=route.model,
+            detail=f"nothing within {timeout:.0f}s",
+        )
+    except FleetError as error:
+        return Liveness(
+            route=route.name,
+            up=False,
+            seconds=time.monotonic() - started,
+            asked=route.model,
+            detail=redact(str(error), [route]),
+        )
+    return Liveness(
+        route=route.name,
+        up=not answer.empty,
+        seconds=answer.seconds,
+        served=answer.answered_by,
+        asked=route.model,
+        detail="" if not answer.empty else "answered with nothing",
+    )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -298,6 +298,56 @@ class TestStreamParsing:
         assert answer.usage.prompt_tokens == 10
 
 
+@pytest.mark.asyncio
+class TestWhatActuallyAnswered:
+    """The route file says what to ask for. Only the stream says what replied.
+
+    On this fleet they differ on every call: four different models were asked
+    for and one name came back for all four. Recording the asked-for name would
+    put a model that never ran into every provenance comment of the corpus.
+    """
+
+    async def test_the_serving_model_is_taken_off_the_stream(self, route: Route) -> None:
+        event = {"model": "gpt-5-6-mini", "choices": [{"delta": {"content": "Một."}}]}
+        body = f"data: {json.dumps(event)}\n\ndata: [DONE]\n\n"
+        async with Client(transport=transport(ok(body))) as api:
+            answer = await api.complete(route, "x")
+        assert answer.served == "gpt-5-6-mini"
+        assert answer.model == route.model
+        assert answer.answered_by == "gpt-5-6-mini"
+
+    async def test_the_first_chunk_to_name_a_model_wins(self, route: Route) -> None:
+        """Every chunk repeats it. Reading the last one instead would be the
+        same answer on a good stream and an empty string on a truncated one."""
+        first = {"model": "gpt-5-6-mini", "choices": [{"delta": {"content": "Một"}}]}
+        second = {"model": "gpt-5-6-mini", "choices": [{"delta": {"content": "."}}]}
+        body = f"data: {json.dumps(first)}\n\ndata: {json.dumps(second)}\n\ndata: [DONE]\n\n"
+        async with Client(transport=transport(ok(body))) as api:
+            answer = await api.complete(route, "x")
+        assert answer.served == "gpt-5-6-mini"
+        assert answer.text == "Một."
+
+    async def test_a_model_named_on_a_contentless_chunk_still_counts(self, route: Route) -> None:
+        """The opening chunk announces the assistant and names the model, and it
+        carries no content at all."""
+        opening = {"model": "gpt-5-6-mini", "choices": [{"delta": {"role": "assistant"}}]}
+        body = f"data: {json.dumps(opening)}\n\n" + sse("Một.")
+        async with Client(transport=transport(ok(body))) as api:
+            answer = await api.complete(route, "x")
+        assert answer.served == "gpt-5-6-mini"
+
+    async def test_a_stream_that_names_nothing_falls_back_to_what_was_asked_for(
+        self, route: Route
+    ) -> None:
+        """Silence is not evidence of substitution. Some hosts never name a
+        model and recording an empty string for them would be worse than
+        recording the one the route file asked for."""
+        async with Client(transport=transport(ok(sse("Một.")))) as api:
+            answer = await api.complete(route, "x")
+        assert answer.served == ""
+        assert answer.answered_by == route.model
+
+
 class TestReportedUsage:
     @pytest.mark.parametrize(
         "reported", [None, {}, {"prompt_tokens": None}, {"prompt_tokens": "x"}, {"other": 1}]
