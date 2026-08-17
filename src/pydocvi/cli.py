@@ -30,6 +30,7 @@ from pydocvi import (
     mine,
     queue,
     render,
+    report,
     routes,
     sync,
     translate,
@@ -56,6 +57,8 @@ glossary_app = typer.Typer(help="Mine, curate and version the terminology.", no_
 app.add_typer(glossary_app, name="glossary")
 prompt_app = typer.Typer(help="Show what goes over the wire.", no_args_is_help=True)
 app.add_typer(prompt_app, name="prompt")
+report_app = typer.Typer(help="Generate the committed reports.", no_args_is_help=True)
+app.add_typer(report_app, name="report")
 
 console = Console()
 
@@ -150,7 +153,7 @@ def sync_command(
 
 @app.command(name="classify")
 def classify_command(
-    report: Annotated[
+    write_report: Annotated[
         bool, typer.Option("--report", help="Write the breakdown to reports/classify.md.")
     ] = False,
 ) -> None:
@@ -169,7 +172,7 @@ def classify_command(
     console.print(table)
     console.print(f"never sent to a model: {counts.passthrough:,}")
 
-    if report:
+    if write_report:
         where.reports.mkdir(parents=True, exist_ok=True)
         target = where.reports / "classify.md"
         target.write_text(_classify_markdown(counts), encoding="utf-8")
@@ -303,7 +306,7 @@ def translate_command(
     if not yes:
         typer.confirm(f"{pending:,} batches to call, continue?", abort=True)
 
-    _translated(run, asyncio.run(_translate(run, known, limit=limit)))
+    _translated(run, asyncio.run(_translate(run, known, limit=limit)), where=where)
 
 
 def _selected(upstream: Path, *, tier: int | None, file: Path | None) -> list[batch.Batch]:
@@ -364,9 +367,19 @@ async def _translate(
             run.save(force=True)
 
 
-def _translated(run: translate.Run, progress: worker.Progress) -> None:
-    """The lines a person reads when a run stops, however it stopped."""
+def _translated(run: translate.Run, progress: worker.Progress, *, where: config.Paths) -> None:
+    """The lines a person reads when a run stops, however it stopped.
+
+    The tally is written to disk here as well as printed. A refusal that was
+    fixed on rung 2 leaves no trace in the corpus, so this file is the only
+    place ``report quality`` can get the number that says whether the prompt is
+    working.
+    """
     tally = run.tally
+    tally.calls = progress.calls
+    tally.seconds = progress.seconds
+    tally.by_route = dict(progress.by_route)
+    tally.save(where.tallies)
     console.print(
         f"{progress.done:,} calls in {progress.seconds / 3600:.1f}h "
         f"at {progress.calls_per_hour:.1f} calls/hour, "
@@ -1255,7 +1268,7 @@ def audit_command(
         str | None, typer.Option("--skip", help="The same, for checks to leave out.")
     ] = None,
     lang: Annotated[str, typer.Option("--lang", help="Which language to audit.")] = config.LANGUAGE,
-    report: Annotated[
+    write_to: Annotated[
         Path | None, typer.Option("--report", help="Write the Markdown report here.")
     ] = None,
     as_json: Annotated[
@@ -1295,9 +1308,9 @@ def audit_command(
         console.print(f"[red]{error}[/red]")
         raise typer.Exit(ExitCode.USAGE) from error
 
-    if report is not None:
-        report.parent.mkdir(parents=True, exist_ok=True)
-        report.write_text(audit.markdown(result), encoding="utf-8")
+    if write_to is not None:
+        write_to.parent.mkdir(parents=True, exist_ok=True)
+        write_to.write_text(audit.markdown(result), encoding="utf-8")
     if as_json:
         typer.echo(result.as_json(), nl=False)
     else:
@@ -1313,14 +1326,14 @@ def _names(given: str | None) -> list[str]:
     return [one.strip() for one in given.split(",") if one.strip()]
 
 
-def _audit_table(report: audit.Report, corpus: audit.Corpus, *, elapsed: float) -> None:
+def _audit_table(result: audit.Report, corpus: audit.Corpus, *, elapsed: float) -> None:
     """One row per failing check, then the verdict.
 
     Only the failing ones. A table of forty-one rows where thirty-five say zero
     is a table whose useful part is below the fold, and the count of what passed
     is on the last line for anyone who wants it.
     """
-    failing = report.failing()
+    failing = result.failing()
     if failing:
         table = Table(title=None, box=None, pad_edge=False)
         table.add_column("check")
@@ -1337,16 +1350,118 @@ def _audit_table(report: audit.Report, corpus: audit.Corpus, *, elapsed: float) 
             )
         console.print(table)
 
-    passed = len(report.results) - len(failing)
+    passed = len(result.results) - len(failing)
     console.print(
-        f"{len(corpus.catalogs):,} catalogs, {audit.plural(len(report.results), 'check')}, "
-        f"{passed} passed, {audit.plural(len(report.findings), 'finding')}, {elapsed:.1f}s"
+        f"{len(corpus.catalogs):,} catalogs, {audit.plural(len(result.results), 'check')}, "
+        f"{passed} passed, {audit.plural(len(result.findings), 'finding')}, {elapsed:.1f}s"
     )
-    if report.ok:
+    if result.ok:
         console.print("[green]every hard check passes[/green]")
         return
-    hard = report.failing(hard=True)
+    hard = result.failing(hard=True)
     console.print(f"[red]{audit.plural(len(hard), 'hard check')} failing[/red]")
+
+
+@report_app.command("coverage")
+def report_coverage(
+    readme: Annotated[
+        bool, typer.Option("--readme/--no-readme", help="Regenerate the README table too.")
+    ] = True,
+    branch: Annotated[str, typer.Option(help="Which version the catalogs are of.")] = (
+        sync.DEFAULT_BRANCH
+    ),
+) -> None:
+    """Write ``reports/coverage.md``, and the README table with it.
+
+    Five columns, and only the human one may be called translated. The machine
+    column is a corpus to review and the passthrough column is strings that
+    never needed translating, and a project that adds the three together is how
+    a README comes to claim a million translated words.
+    """
+    where = config.paths()
+    if not where.content.exists():
+        console.print(f"[red]no content repo at {where.content}[/red]")
+        raise typer.Exit(ExitCode.USAGE)
+    corpus = audit.assemble(where, branch=branch)
+    target = _written(where.published / "coverage.md", report.coverage(corpus))
+    console.print(f"wrote {target}")
+    if readme:
+        _readme(where, corpus)
+    _coverage_table(corpus)
+
+
+def _readme(where: config.Paths, corpus: audit.Corpus) -> None:
+    """Put the table back into the README, or say why it could not go there.
+
+    A missing fence is a usage error rather than a crash, because the fix is one
+    line in a Markdown file and the person running this is the person who can
+    make it.
+    """
+    target = where.content / "README.md"
+    if not target.exists():
+        console.print(f"[yellow]no README at {target}, so nothing to regenerate[/yellow]")
+        return
+    try:
+        rewritten = report.render(target.read_text(encoding="utf-8"), corpus)
+    except report.ReportError as error:
+        console.print(f"[red]{target}: {error}[/red]")
+        raise typer.Exit(ExitCode.USAGE) from error
+    target.write_text(rewritten, encoding="utf-8")
+    console.print(f"wrote {target}")
+
+
+def _coverage_table(corpus: audit.Corpus) -> None:
+    """The same numbers on the terminal, so the command says what it did."""
+    tiers = report.by_tier(corpus)
+    table = Table(box=None)
+    table.add_column("tier")
+    table.add_column("entries", justify="right")
+    for column in report.COLUMNS:
+        table.add_column(str(column), justify="right")
+    for number, count in sorted(tiers.items()):
+        table.add_row(
+            str(number),
+            f"{count.total:,}",
+            *(f"{count.entries[one]:,}" for one in report.COLUMNS),
+        )
+    console.print(table)
+
+
+@report_app.command("quality")
+def report_quality(
+    limit: Annotated[int, typer.Option(help="Rows in each worst-first table.")] = 20,
+    branch: Annotated[str, typer.Option(help="Which version the catalogs are of.")] = (
+        sync.DEFAULT_BRANCH
+    ),
+) -> None:
+    """Write ``reports/quality.md``: invariants, refusals, terminology, deaths.
+
+    Everything in it is either a recount off the committed corpus or a number a
+    run wrote down, and the two are labelled. Where there has been no run the
+    section says so rather than printing zeros, because a refusal rate of 0.0 %
+    reads as a perfect run and an absent one reads as absent.
+    """
+    where = config.paths()
+    if not where.content.exists():
+        console.print(f"[red]no content repo at {where.content}[/red]")
+        raise typer.Exit(ExitCode.USAGE)
+    corpus = audit.assemble(where, branch=branch)
+    tallies = translate.Tally.read_all(where.tallies)
+    target = _written(
+        where.published / "quality.md", report.quality(corpus, tallies=tallies, limit=limit)
+    )
+    console.print(f"wrote {target}")
+    if not tallies:
+        console.print(
+            "[yellow]no translation run on record, so the refusal rates are absent "
+            "rather than zero[/yellow]"
+        )
+
+
+def _written(target: Path, text: str) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    return target
 
 
 def main() -> NoReturn:

@@ -26,10 +26,13 @@ things left to try, which is why exhausting the ladder buries the job rather
 than releasing it.
 """
 
+import json
 import logging
+import re
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from enum import IntEnum
+from pathlib import Path
 
 from pydocvi import invariants, parse, render
 from pydocvi.batch import Batch, Item, batch_id
@@ -46,6 +49,10 @@ log = logging.getLogger(__name__)
 #: dictionary is nine hours a Ctrl-C can throw away, and the write is
 #: milliseconds against a call that is minutes.
 SAVE_EVERY = 10
+
+#: A run is named by its start time, which carries colons that no filename
+#: wants. Everything outside this set becomes a hyphen.
+_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 class Attempt(IntEnum):
@@ -253,15 +260,24 @@ class Tally:
     Counted as the run goes rather than reconstructed from the corpus after it,
     because a refusal that was fixed on rung 2 leaves no trace in the corpus at
     all and it is exactly the number that says the ladder is earning its calls.
+
+    Written to disk at the end of a run for the same reason. ``report quality``
+    quotes the refusal rate per rule as the evidence that the prompt is working,
+    and a number that only ever appeared in somebody's terminal is not evidence
+    of anything a month later.
     """
 
+    run: str = ""
     batches: int = 0
     accepted: int = 0
     refused: int = 0
     rejected: int = 0
     dead: int = 0
+    calls: int = 0
+    seconds: float = 0.0
     by_rule: dict[str, int] = field(default_factory=dict)
     by_attempt: dict[int, int] = field(default_factory=dict)
+    by_route: dict[str, int] = field(default_factory=dict)
 
     def record(self, outcome: Outcome, *, attempt: Attempt) -> None:
         self.batches += 1
@@ -283,6 +299,57 @@ class Tally:
         """The share of entries seen that came back usable, over the whole run."""
         total = self.accepted + self.refused
         return self.accepted / total if total else 0.0
+
+    def as_json(self) -> str:
+        return json.dumps(asdict(self), indent=1, sort_keys=True) + "\n"
+
+    @classmethod
+    def from_json(cls, text: str) -> Tally:
+        """Read a tally back, ignoring fields this version does not know.
+
+        Ignoring rather than refusing, because these files accumulate one per
+        run over months and a field added later must not make every earlier run
+        unreadable. A tally that has lost a column is still the refusal rate.
+        """
+        loaded = json.loads(text)
+        if not isinstance(loaded, dict):
+            raise ValueError("a tally is a JSON object")
+        known = {one.name for one in fields(cls)}
+        tally = cls(**{key: value for key, value in loaded.items() if key in known})
+        #: JSON has no integer keys, so the rungs come back as strings and would
+        #: sort "10" before "2" and compare unequal to the ints ``record``
+        #: writes. Converted here rather than at every read site.
+        tally.by_attempt = {int(rung): count for rung, count in tally.by_attempt.items()}
+        return tally
+
+    def save(self, where: Path) -> Path:
+        """Write this run's tally into ``where``, named by the run.
+
+        One file per run rather than one file overwritten, because a tier is
+        translated over several sittings and the question ``report quality``
+        answers is what the whole tier cost, not what the last hour of it cost.
+        """
+        where.mkdir(parents=True, exist_ok=True)
+        target = where / f"{_FILENAME.sub('-', self.run or 'unnamed')}.json"
+        target.write_text(self.as_json(), encoding="utf-8")
+        return target
+
+    @classmethod
+    def read_all(cls, where: Path) -> list[Tally]:
+        """Every run on record, oldest first, skipping anything unreadable.
+
+        Skipping rather than raising, because a half-written file from a machine
+        that lost power should cost the report one run and not the report.
+        """
+        if not where.exists():
+            return []
+        found = []
+        for path in sorted(where.glob("*.json")):
+            try:
+                found.append(cls.from_json(path.read_text(encoding="utf-8")))
+            except OSError, ValueError, TypeError:
+                log.warning("unreadable tally", extra={"path": str(path)})
+        return sorted(found, key=lambda one: one.run)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -337,7 +404,7 @@ class Run:
         self.run = run
         self.prompt = prompt
         self.save_every = save_every
-        self.tally = Tally()
+        self.tally = Tally(run=run)
         self._items = {item.segment: item for batch in batches for item in batch.items}
         self._since_save = 0
 

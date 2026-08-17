@@ -48,6 +48,13 @@ PROMPT_CHARS = 8
 
 MARKER = "# pydocvi:"
 
+#: The field written on an entry that was copied through rather than translated,
+#: and the only durable record of what the classifier thought at the time. Named
+#: here rather than spelled at each reader, because the audit and the coverage
+#: report both parse it back and a second spelling is a second thing to keep in
+#: step with :func:`provenance`.
+PASSTHROUGH_FIELD = "passthrough="
+
 
 class ApplyError(ValueError):
     """The catalogs and the memory disagree in a way writing cannot resolve."""
