@@ -255,6 +255,7 @@ class Bench:
     empty: int
     seconds: float
     concurrency: int
+    latency: float = 0.0
 
     @property
     def successes(self) -> int:
@@ -262,11 +263,26 @@ class Bench:
 
     @property
     def average_seconds(self) -> float:
+        """Wall clock divided by calls, which is throughput and not latency.
+
+        At concurrency 4 this came out at 32 seconds for a host whose calls take
+        96. Both numbers are worth having and they are not the same number, which
+        is why ``latency`` is kept separately and the report prints both.
+        """
         return self.seconds / self.calls if self.calls else 0.0
 
     @property
     def calls_per_hour(self) -> float:
         return self.successes / (self.seconds / 3600) if self.seconds else 0.0
+
+    @property
+    def parallelism(self) -> float:
+        """How many calls the host really had in flight, measured rather than asked for.
+
+        A host that serialises answers at 1.0 however high its configured
+        concurrency is, and that is the whole of the safe-concurrency question.
+        """
+        return self.latency / self.average_seconds if self.average_seconds else 0.0
 
     @classmethod
     def of(
@@ -279,6 +295,7 @@ class Bench:
             empty=empty,
             seconds=wall,
             concurrency=route.concurrency,
+            latency=sum(durations) / len(durations) if durations else 0.0,
         )
 
 
@@ -294,28 +311,49 @@ def hours_for(batches: int, calls_per_hour: float, *, retry_rate: float = 0.15) 
     return batches * (1 + retry_rate) / calls_per_hour
 
 
-def bench_markdown(results: Sequence[Bench], *, batches: int) -> str:
-    """The report ``fleet bench`` writes, and the source of every estimate."""
+def bench_markdown(results: Sequence[Bench], *, batches: int, absent: Sequence[str] = ()) -> str:
+    """The report ``fleet bench`` writes, and the source of every estimate.
+
+    A route that was not measured is named rather than left out silently. The
+    fleet total is the sum of what was measured, and a reader who does not know
+    a host is missing from it will read it as the whole fleet and plan off a
+    number that is too small.
+
+    Two seconds columns, because they are two different numbers and the table
+    used to print only the second one under a heading that read like the first.
+    "Seconds a call" is how long a call takes. "Wall per call" is the wall clock
+    divided by the calls, which is what a tier's duration is made of. The last
+    column is the first divided by the second, being how many calls the host
+    really had in flight, and a host that serialises answers 1.0 there whatever
+    its configured concurrency says.
+    """
     lines = [
         "# Fleet bench",
         "",
-        "| route | calls | empty | failed | mean seconds | calls/hour | concurrency |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| route | calls | empty | failed | seconds a call | wall per call "
+        "| calls/hour | concurrency | measured |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for result in results:
         lines.append(
             f"| {result.route} | {result.calls} | {result.empty} | {result.failures} "
-            f"| {result.average_seconds:.0f} | {result.calls_per_hour:.1f} "
-            f"| {result.concurrency} |"
+            f"| {result.latency:.0f} | {result.average_seconds:.0f} "
+            f"| {result.calls_per_hour:.1f} "
+            f"| {result.concurrency} | {result.parallelism:.1f} |"
         )
     total = sum(result.calls_per_hour for result in results)
     lines += [
-        f"| **fleet** | | | | | **{total:.1f}** | |",
+        f"| **fleet** | | | | | | **{total:.1f}** | | |",
         "",
         f"A full pass over {batches:,} batches is {hours_for(batches, total):.1f} hours "
         "at this rate, including retries.",
         "",
     ]
+    if absent:
+        lines += [
+            f"Not measured, and not in the total: {', '.join(absent)}.",
+            "",
+        ]
     return "\n".join(lines)
 
 

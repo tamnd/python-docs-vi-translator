@@ -8,6 +8,7 @@ enough to read in one screen.
 import asyncio
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, NoReturn
 
@@ -240,7 +241,12 @@ def _corpus(upstream: Path) -> list[Catalog]:
 
 
 def _routes() -> list[routes.Route]:
-    """The route file, or an exit that names the path it looked at."""
+    """Every route in the file, enabled or not, or an exit naming the path.
+
+    For the two commands whose job is to show or fetch rather than to spend:
+    ``status``, which should show a host that is switched off, and ``trace``,
+    which is how somebody works out why it was switched off.
+    """
     try:
         return routes.load()
     except routes.RouteError as error:
@@ -248,10 +254,27 @@ def _routes() -> list[routes.Route]:
         raise typer.Exit(ExitCode.FLEET_UNREACHABLE) from error
 
 
+def _working_routes() -> list[routes.Route]:
+    """The routes a command may tunnel to, probe, or spend calls on.
+
+    ``enabled`` was honoured by ``Router`` and by nothing the command line
+    reaches, so switching a host off in the route file changed nothing: it was
+    still tunnelled to, still probed, still benched, and ``fleet up`` said it
+    opened a tunnel for every enabled route while opening one for all of them.
+    A host is switched off because somebody found out it does not work, and that
+    finding should not need to be made twice.
+    """
+    known = [route for route in _routes() if route.enabled]
+    if not known:
+        console.print("[red]every route in the file is disabled[/red]")
+        raise typer.Exit(ExitCode.FLEET_UNREACHABLE)
+    return known
+
+
 @fleet_app.command("up")
 def fleet_up() -> None:
     """Open a tunnel for every enabled route."""
-    known = _routes()
+    known = _working_routes()
     manager = fleet.Fleet(known)
     failed = 0
     for route in known:
@@ -270,7 +293,7 @@ def fleet_down() -> None:
     Worth doing when a run finishes. A forgotten tunnel is a bound port that the
     next run's ``ExitOnForwardFailure`` correctly refuses to work around.
     """
-    known = _routes()
+    known = _working_routes()
     manager = fleet.Fleet(known)
     for route in known:
         closed = manager.down(route)
@@ -279,8 +302,14 @@ def fleet_down() -> None:
 
 @fleet_app.command("status")
 def fleet_status() -> None:
-    """What is forwarded where."""
+    """What is forwarded where, including the hosts that are switched off.
+
+    The one fleet command that reports every route in the file rather than the
+    ones a run would use, because a host missing from this table looks like a
+    host missing from the file.
+    """
     known = _routes()
+    switched_off = {route.name for route in known if not route.enabled}
     table = Table(box=None)
     table.add_column("route")
     table.add_column("host")
@@ -288,6 +317,8 @@ def fleet_status() -> None:
     table.add_column("state")
     for tunnel in fleet.Fleet(known).status():
         state = "[green]up[/green]" if tunnel.up else "[red]down[/red]"
+        if tunnel.route in switched_off:
+            state = f"{state} [yellow](disabled)[/yellow]"
         table.add_row(
             tunnel.route,
             tunnel.host,
@@ -300,7 +331,7 @@ def fleet_status() -> None:
 @fleet_app.command("probe")
 def fleet_probe() -> None:
     """Ask every route for its health, through the tunnel and with curl."""
-    known = _routes()
+    known = _working_routes()
     manager = fleet.Fleet(known)
     answering = 0
     for route in known:
@@ -320,7 +351,7 @@ def doctor() -> None:
     runbook's ``set -e`` keys on, which is why it is a top-level command rather
     than a subcommand of ``fleet``.
     """
-    known = _routes()
+    known = _working_routes()
     manager = fleet.Fleet(known)
     diagnosis = fleet.Diagnosis(
         tunnels=[manager.probe(route) for route in known],
@@ -344,36 +375,98 @@ def fleet_bench(
         str, typer.Option(help="What to send.")
     ] = "Reply with the single word: ready.",
     yes: Annotated[bool, typer.Option("--yes", help="Skip the confirmation.")] = False,
+    route: Annotated[
+        list[str] | None, typer.Option(help="Measure only these routes. Repeatable.")
+    ] = None,
 ) -> None:
     """Measure calls per hour and safe concurrency, and write the report.
 
     Every wall-clock estimate this tool prints comes from the report this
     writes. Without it the estimates are the design notes' aspirations, which
     were written before anything had run.
+
+    The key check is here rather than left to ``doctor`` because the first real
+    three-route run of this command was made in a shell that had no key in it.
+    Eighteen calls came back 401 in a little over a second each, and the command
+    exited 0 and wrote a report saying every route does 0.0 calls per hour. A
+    report of zeros is worse than no report, because the next estimate is
+    computed off it.
+
+    ``--route`` exists because the second real run met a host that answers health
+    and never finishes a call. At a 1 200 second timeout and two retries that is
+    an hour a call and six hours for the route, and it stood between the run and
+    the two hosts behind it in the list. A sick host should cost its own
+    measurement and nobody else's.
+
+    Anything in the route file that was not measured is named in the report,
+    whether it was left out by ``--route`` or switched off in the file. Switching
+    the sick host off made it drop out of the report silently, which is the thing
+    the line was added to prevent.
     """
-    known = _routes()
+    every = _routes()
+    known = _working_routes()
+    if route:
+        if unknown := sorted(set(route) - {one.name for one in known}):
+            console.print(f"[red]no route named {', '.join(unknown)}[/red]")
+            raise typer.Exit(ExitCode.USAGE)
+        known = [one for one in known if one.name in route]
+    absent = [one.name for one in every if one.name not in {other.name for other in known}]
+
+    if missing := routes.missing_keys(known):
+        console.print(f"[red]{', '.join(missing)} is not set in this shell[/red]")
+        raise typer.Exit(ExitCode.FLEET_UNREACHABLE)
+
     total = calls * len(known)
     if not yes:
         typer.confirm(f"{total} real calls across {len(known)} routes, continue?", abort=True)
 
-    results = asyncio.run(_bench(known, calls=calls, prompt=prompt))
-    for result in results:
-        console.print(
-            f"{result.route}: {result.successes}/{result.calls} in {result.seconds:.0f}s, "
-            f"{result.calls_per_hour:.1f} calls/hour at concurrency {result.concurrency}"
-        )
+    results = asyncio.run(_bench(known, calls=calls, prompt=prompt, say=_bench_line))
+
+    if not any(result.successes for result in results):
+        console.print("[red]no route completed a single call, nothing was measured[/red]")
+        raise typer.Exit(ExitCode.FLEET_UNREACHABLE)
 
     where = config.paths()
     where.reports.mkdir(parents=True, exist_ok=True)
     target = where.reports / "fleet-bench.md"
     batches = len(batch.build(sync.read_corpus(where.upstream), root=where.upstream))
-    target.write_text(fleet.bench_markdown(results, batches=batches), encoding="utf-8")
+    target.write_text(
+        fleet.bench_markdown(results, batches=batches, absent=absent), encoding="utf-8"
+    )
     console.print(f"wrote {target}")
 
 
-async def _bench(known: list[routes.Route], *, calls: int, prompt: str) -> list[fleet.Bench]:
+def _bench_line(result: fleet.Bench) -> None:
+    """One route's measurement, printed the moment that route is done."""
+    console.print(
+        f"{result.route}: {result.successes}/{result.calls} in {result.seconds:.0f}s, "
+        f"{result.calls_per_hour:.1f} calls/hour at concurrency {result.concurrency}"
+    )
+
+
+async def _bench(
+    known: list[routes.Route],
+    *,
+    calls: int,
+    prompt: str,
+    say: Callable[[fleet.Bench], None] = lambda _: None,
+) -> list[fleet.Bench]:
+    """Measure every route in turn, announcing each one as it finishes.
+
+    One route at a time, because two hosts measured at once share this machine's
+    uplink and the number stops being about the host. Announced as it finishes
+    rather than at the end, because a route here is a quarter of an hour and the
+    first real three-route run was killed during the third one. It had measured
+    two hosts by then and printed neither, which is a bad trade for one line of
+    code.
+    """
     async with Client() as client:
-        return [await fleet.bench(client, route, calls=calls, prompt=prompt) for route in known]
+        measured = []
+        for route in known:
+            result = await fleet.bench(client, route, calls=calls, prompt=prompt)
+            say(result)
+            measured.append(result)
+        return measured
 
 
 @fleet_app.command("trace")
@@ -585,7 +678,7 @@ def glossary_curate(
         console.print("nothing to curate")
         return
 
-    known = _routes()
+    known = _working_routes()
     if not yes:
         typer.confirm(f"{len(made)} calls about {len(found):,} terms, continue?", abort=True)
 

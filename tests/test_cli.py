@@ -187,6 +187,20 @@ class TestBatch:
         assert runner.invoke(app, ["batch"]).exit_code == ExitCode.CHECK_FAILED
 
 
+def _route_entry(name: str, *, port: int = 8103, enabled: bool = True) -> dict[str, object]:
+    """One route with the shape of a real one and none of its addresses."""
+    entry: dict[str, object] = {
+        "name": name,
+        "base_url": f"http://127.0.0.1:{port}/v1",
+        "model": "gpt-5",
+        "host": name,
+        "local_port": port,
+    }
+    if not enabled:
+        entry["enabled"] = False
+    return entry
+
+
 @pytest.fixture
 def route_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A route file with the shape of a real one and none of its addresses.
@@ -195,20 +209,18 @@ def route_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     config directory and is never part of a checkout.
     """
     target = tmp_path / "routes.json"
+    target.write_text(json.dumps({"routes": [_route_entry("a")]}), encoding="utf-8")
+    monkeypatch.setenv("PYDOCVI_ROUTES", str(target))
+    monkeypatch.setenv("CHATGPT_PROXY_KEY", FAKE_KEY)
+    return target
+
+
+@pytest.fixture
+def two_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """One route that works and one somebody switched off."""
+    target = tmp_path / "routes.json"
     target.write_text(
-        json.dumps(
-            {
-                "routes": [
-                    {
-                        "name": "a",
-                        "base_url": "http://127.0.0.1:8103/v1",
-                        "model": "gpt-5",
-                        "host": "a",
-                        "local_port": 8103,
-                    }
-                ]
-            }
-        ),
+        json.dumps({"routes": [_route_entry("a"), _route_entry("b", port=8104, enabled=False)]}),
         encoding="utf-8",
     )
     monkeypatch.setenv("PYDOCVI_ROUTES", str(target))
@@ -255,6 +267,95 @@ class TestFleetCommands:
         commands.answers = {"curl": Ran(code=0, out="000")}
         assert runner.invoke(app, ["fleet", "probe"]).exit_code == ExitCode.FLEET_UNREACHABLE
 
+    def test_a_disabled_route_is_not_tunnelled_to(
+        self, two_routes: Path, commands: FakeRunner
+    ) -> None:
+        """``enabled`` was honoured by ``Router`` and by nothing the command line
+        reaches, so switching a broken host off in the file changed nothing."""
+        commands.answers = {"lsof": Ran(code=1)}
+        result = runner.invoke(app, ["fleet", "up"])
+        assert result.exit_code == ExitCode.OK
+        assert "a:" in result.stdout
+        assert "b:" not in result.stdout
+
+    def test_a_disabled_route_is_not_benched(
+        self, two_routes: Path, commands: FakeRunner, workspace: Path
+    ) -> None:
+        """A host is switched off because somebody found out it does not work.
+        Six calls at a 1 200 second timeout is how long finding that out took."""
+        spent: list[str] = []
+
+        async def _stub(
+            known: list[Route],
+            *,
+            calls: int,
+            prompt: str,
+            say: Callable[[fleet.Bench], None] = lambda _: None,
+        ) -> list[fleet.Bench]:
+            spent.extend(one.name for one in known)
+            return [
+                fleet.Bench(
+                    route=one.name,
+                    calls=1,
+                    failures=0,
+                    empty=0,
+                    seconds=60.0,
+                    concurrency=1,
+                    latency=60.0,
+                )
+                for one in known
+            ]
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr("pydocvi.cli._bench", _stub)
+        try:
+            result = runner.invoke(app, ["fleet", "bench", "--calls", "1", "--yes"])
+        finally:
+            monkeypatch.undo()
+        assert result.exit_code == ExitCode.OK
+        assert spent == ["a"]
+
+    def test_a_disabled_route_is_named_in_the_report(
+        self, two_routes: Path, commands: FakeRunner, workspace: Path
+    ) -> None:
+        """Switching the sick host off made it drop out of the report silently,
+        which is what the line was added to prevent in the first place."""
+        measured = [
+            fleet.Bench(
+                route="a", calls=1, failures=0, empty=0, seconds=60.0, concurrency=1, latency=60.0
+            )
+        ]
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr("pydocvi.cli._bench", _returning(measured))
+        try:
+            result = runner.invoke(app, ["fleet", "bench", "--calls", "1", "--yes"])
+        finally:
+            monkeypatch.undo()
+        assert result.exit_code == ExitCode.OK
+        report = (config.paths().reports / "fleet-bench.md").read_text(encoding="utf-8")
+        assert "Not measured, and not in the total: b." in report
+
+    def test_status_shows_a_route_that_is_switched_off(
+        self, two_routes: Path, commands: FakeRunner
+    ) -> None:
+        """The one fleet command that reports every route in the file, because a
+        host missing from this table looks like a host missing from the file."""
+        commands.answers = {"lsof": Ran(code=1)}
+        result = runner.invoke(app, ["fleet", "status"])
+        assert result.exit_code == ExitCode.OK
+        assert "disabled" in result.stdout
+
+    def test_a_file_with_every_route_switched_off(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, commands: FakeRunner
+    ) -> None:
+        target = tmp_path / "routes.json"
+        target.write_text(json.dumps({"routes": [_route_entry("a", enabled=False)]}), "utf-8")
+        monkeypatch.setenv("PYDOCVI_ROUTES", str(target))
+        monkeypatch.setenv("CHATGPT_PROXY_KEY", FAKE_KEY)
+        result = runner.invoke(app, ["fleet", "probe"])
+        assert result.exit_code == ExitCode.FLEET_UNREACHABLE
+        assert "every route in the file is disabled" in result.stdout
+
     def test_a_missing_route_file_names_the_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Named because the commonest cause is looking in the wrong place, and
         the path is written in the platform's own separators."""
@@ -295,6 +396,80 @@ class TestFleetCommands:
         confirmation is not decoration."""
         result = runner.invoke(app, ["fleet", "bench"], input="n\n")
         assert result.exit_code != ExitCode.OK
+
+    def test_bench_checks_for_the_key_before_asking_to_spend_calls(
+        self, route_file: Path, commands: FakeRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The first real three-route run was made in a shell with no key in it.
+        Every call came back 401 in about a second."""
+        monkeypatch.delenv("CHATGPT_PROXY_KEY")
+        result = runner.invoke(app, ["fleet", "bench"])
+        assert result.exit_code == ExitCode.FLEET_UNREACHABLE
+        assert "CHATGPT_PROXY_KEY" in result.stdout
+        assert "continue?" not in result.stdout
+
+    def test_a_bench_that_measured_nothing_writes_no_report(
+        self,
+        route_file: Path,
+        commands: FakeRunner,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A report saying every route does 0.0 calls per hour is worse than no
+        report, because the next estimate is computed off it."""
+        nothing = [fleet.Bench(route="a", calls=6, failures=6, empty=0, seconds=4.0, concurrency=1)]
+        monkeypatch.setattr("pydocvi.cli._bench", _returning(nothing))
+        result = runner.invoke(app, ["fleet", "bench", "--calls", "6", "--yes"])
+        assert result.exit_code == ExitCode.FLEET_UNREACHABLE
+        assert "nothing was measured" in result.stdout
+        assert not (config.paths().reports / "fleet-bench.md").exists()
+
+    def test_each_route_is_reported_as_it_finishes(
+        self,
+        route_file: Path,
+        commands: FakeRunner,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A route is a quarter of an hour on this transport. The first real run
+        was killed during the third one, having measured two and printed neither."""
+        measured = [
+            fleet.Bench(route="first", calls=4, failures=0, empty=0, seconds=600.0, concurrency=1),
+            fleet.Bench(route="second", calls=4, failures=0, empty=0, seconds=300.0, concurrency=4),
+        ]
+        monkeypatch.setattr("pydocvi.cli._bench", _returning(measured))
+        result = runner.invoke(app, ["fleet", "bench", "--calls", "4", "--yes"])
+        assert result.exit_code == ExitCode.OK
+        assert result.stdout.index("first:") < result.stdout.index("second:")
+        assert result.stdout.index("second:") < result.stdout.index("wrote ")
+
+    def test_bench_on_a_route_that_does_not_exist(
+        self, route_file: Path, commands: FakeRunner
+    ) -> None:
+        result = runner.invoke(app, ["fleet", "bench", "--route", "nope", "--yes"])
+        assert result.exit_code == ExitCode.USAGE
+        assert "no route named nope" in result.stdout
+
+
+def _returning(results: list[fleet.Bench]) -> Callable[..., list[fleet.Bench]]:
+    """A stand-in for ``_bench`` that spends no calls and answers what it is given.
+
+    It calls ``say`` the way the real one does, one route at a time, because that
+    is the part of the contract the command depends on.
+    """
+
+    async def _stub(
+        known: object,
+        *,
+        calls: int,
+        prompt: str,
+        say: Callable[[fleet.Bench], None] = lambda _: None,
+    ) -> list[fleet.Bench]:
+        for result in results:
+            say(result)
+        return results
+
+    return _stub
 
 
 class TestDoctor:

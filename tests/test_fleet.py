@@ -250,6 +250,45 @@ class TestEstimates:
         assert "| a | 10 |" in report
         assert "**15.0**" in report
         assert "2,776 batches" in report
+        assert "Not measured" not in report
+
+    def test_every_row_has_as_many_cells_as_the_heading(self) -> None:
+        """Adding the second seconds column left the total row a cell short, which
+        put the fleet number under the wrong heading in a rendered table."""
+        results = [
+            Bench(
+                route="a", calls=1, failures=0, empty=0, seconds=60.0, concurrency=1, latency=60.0
+            )
+        ]
+        rows = [
+            line for line in bench_markdown(results, batches=1).splitlines() if line.startswith("|")
+        ]
+        assert len({row.count("|") for row in rows}) == 1
+
+    def test_latency_and_wall_per_call_are_not_the_same_number(self) -> None:
+        """The table printed wall per call under a heading that read like latency.
+        At concurrency 4 that was 32 seconds for a host whose calls take 96."""
+        result = Bench(
+            route="a", calls=6, failures=0, empty=0, seconds=193.0, concurrency=4, latency=96.0
+        )
+        assert round(result.average_seconds) == 32
+        assert result.latency == 96.0
+        assert round(result.parallelism, 1) == 3.0
+
+    def test_a_host_that_serialises_measures_one_call_in_flight(self) -> None:
+        """Whatever its configured concurrency says. This is the whole of the
+        safe-concurrency question."""
+        result = Bench(
+            route="a", calls=6, failures=0, empty=0, seconds=330.0, concurrency=4, latency=55.0
+        )
+        assert round(result.parallelism, 1) == 1.0
+
+    def test_a_route_that_was_not_measured_is_named(self) -> None:
+        """A reader who does not know a host is missing from the total reads it as
+        the whole fleet and plans off a number that is too small."""
+        results = [Bench(route="a", calls=10, failures=0, empty=0, seconds=3600.0, concurrency=4)]
+        report = bench_markdown(results, batches=2_776, absent=["b", "c"])
+        assert "Not measured, and not in the total: b, c." in report
 
 
 @pytest.mark.asyncio

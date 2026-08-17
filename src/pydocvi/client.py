@@ -201,11 +201,12 @@ class Client:
                     attempts=attempt,
                 )
 
+            retrying = attempt <= self._retries
             log.warning(
-                "call failed, retrying on the same route",
+                "call failed, retrying on the same route" if retrying else "call failed, giving up",
                 extra={"route": route.name, "attempt": attempt, "reason": last},
             )
-            if attempt <= self._retries:
+            if retrying:
                 await self._clock.sleep(self._backoff(attempt))
 
         raise FleetError(f"{route.name}: {last} after {self._retries + 1} attempts")
