@@ -74,7 +74,7 @@ def check_entry(
         _p06(msgstr),
         _p07(msgstr),
         _p08(msgstr),
-        _p09(msgid, msgstr),
+        _p09(msgid, msgstr, spans),
     )
     return [_at(violation, index) for violation in checks if violation is not None]
 
@@ -210,15 +210,29 @@ def _decompose(text: str) -> str:
     return unicodedata.normalize("NFD", text)
 
 
-def _p09(msgid: str, msgstr: str) -> Violation | None:
-    """Format specifiers: same set, same count.
+def _p09(msgid: str, msgstr: str, spans: Sequence[str]) -> Violation | None:
+    """Format specifiers: same set, same count, after the spans are back.
 
     A dropped ``%s`` is a ``TypeError`` at runtime in whatever program copied
     the string, which makes this the one rule here whose failures escape the
     documentation entirely.
+
+    Against the restored translation, because a format specifier is itself a
+    protected span. Comparing the ``msgid`` against the answer as it arrives
+    compares a string that has ``%s`` in it against one that has ``⟦1⟧`` where
+    the ``%s`` goes, so it refused a perfect translation of every entry carrying
+    one: 617 entries of this corpus, spread over 391 of its 2 776 batches, each
+    of which would have been refused three times and left in English.
+
+    An answer whose markers are broken cannot be restored and is not this rule's
+    to report, so it says nothing and lets ``P01`` and ``P02`` speak.
     """
+    try:
+        final = restore(msgstr, tuple(spans))
+    except RestorationError:
+        return None
     wanted = sorted(FORMATS.findall(msgid))
-    got = sorted(FORMATS.findall(msgstr))
+    got = sorted(FORMATS.findall(final))
     if wanted != got:
         return Violation(rule="P09", detail=f"source has {wanted}, translation has {got}")
     return None
