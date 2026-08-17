@@ -211,7 +211,23 @@ class Queue:
         return None
 
     def finish(self, job: Job) -> None:
-        """Move a leased job to done."""
+        """Move a leased job to done, unless something already buried it.
+
+        The worker finishes every job whose call came back, and a stage may bury
+        a job it was handed in the middle of that same call. Both are right, and
+        they were in the wrong order: the first tier 1 run reported 28 entries
+        out of rungs and ended with ``dead 0``, because :meth:`bury` wrote the
+        dead file and ``finish`` unlinked it a moment later. The job read as a
+        clean success, and ``A02`` in the audit, which exists to make sure no
+        dead job goes unaccounted for, had nothing to find.
+
+        So burying wins. A stage buries a job because it knows something the
+        worker does not, which is that no further attempt will help, and a
+        transport that merely got its bytes back is not evidence against that.
+        """
+        located = self.locate(job.id)
+        if located is not None and located[0] is State.DEAD:
+            return
         self._move(job, State.DONE)
 
     def release(self, job: Job, *, error: str | None = None) -> State:

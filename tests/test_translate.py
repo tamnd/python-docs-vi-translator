@@ -400,6 +400,32 @@ class TestHandlingAnAnswer:
         assert run.queue.count(State.DEAD) == 1
         assert run.tally.dead == 1
 
+    async def test_a_rung_the_queue_already_climbed_is_a_spent_rung(self, tmp_path: Path) -> None:
+        """What a second run over the same tier actually does.
+
+        Job ids are content-addressed on the rung and the advice as well as the
+        entries, so the second run rebuilds the identical ladder and ``add``
+        refuses every step of it as already known. That is the property that
+        makes a second pass cheap, and it meant the second tier 1 run made
+        three calls, reported no entries out of rungs, and left two entries with
+        neither a translation nor a reason.
+        """
+        one = make("Return :func:`len` of it.")
+        run = make_run(tmp_path, [one])
+        run.plan([one])
+        job = _job(run)
+        await run.handle(job, reply(answered("Trả về của nó.")))
+        climbed = _next(run, job)[0]
+        run.queue.finish(run.queue.claim(now=0.0) or climbed)
+        for pending in run.queue.jobs(State.PENDING):
+            run.queue.finish(pending)
+
+        again = make_run(tmp_path, [one], queue=run.queue, memory=run.memory)
+        await again.handle(job, reply(answered("Trả về của nó.")))
+        assert again.queue.count(State.DEAD) == 1
+        assert again.tally.dead == 1
+        assert "already climbed" in (again.queue.jobs(State.DEAD)[0].error or "")
+
     async def test_a_run_counts_refusals_by_rule_and_by_rung(self, tmp_path: Path) -> None:
         """Counted as the run goes, because a refusal fixed on rung 2 leaves no
         trace in the corpus and it is the number that says the ladder pays."""

@@ -31,7 +31,36 @@ _VERSION = re.compile(r"^\d+(\.\d+)*$")
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
 
 _DOCTEST = ">>>"
+_CONTINUED = "..."
 _INDENT = 2
+
+#: The shapes of a line of code, for the blocks the indent rule cannot see.
+#:
+#: Each one is a whole-line anchor and each one had to earn its place against
+#: the corpus. A line that matches none of them is prose as far as this module
+#: is concerned, which is the safe direction to be wrong in: a missed block
+#: costs a call, and a paragraph mistaken for code is an English sentence left
+#: sitting in a Vietnamese page.
+_SHEBANG = re.compile(r"^#!")
+_IMPORT = re.compile(r"^(?:import|from)\s+[\w.]+")
+_ASSIGNMENT = re.compile(r"^[\w.\[\]'\"]+(?:\s*,\s*[\w.\[\]'\"]+)*\s*(?:[-+*/|&^%@]|//|\*\*)?=[^=]")
+_INVOCATION = re.compile(
+    r"^(?:python[\d.]*|pip[\d.]*|py|uv|uvx|source|chmod|make|git|sudo|cd|deactivate)\b"
+)
+_PATH = re.compile(r"^[\w.~-]+(?:[/\\][\w.~-]+)+$")
+_TIGHT = re.compile(r"^(?:[\w.]+\(.*\)|[\[{].*[\]}])$")
+
+#: A terminal prompt, with the virtualenv name some transcripts put in front of
+#: it. One of these anywhere in an entry makes the whole entry a transcript,
+#: because the lines around a prompt are the output of the command in it.
+#:
+#: ``>`` is not in the set, though pdb frames start with it. Three debugger
+#: transcripts in the corpus are reached by including it, and four entries
+#: reading ``> (greater)`` are wrongly reached with them: a table of operators
+#: glossed in English, which is prose and wants translating. ``#`` stays,
+#: because it is both a root prompt and a comment and no reST construct starts
+#: a line with a hash and a space.
+_PROMPT = re.compile(r"^(?:\([\w.-]+\)\s*)?[$#] \S")
 
 
 class Kind(StrEnum):
@@ -101,11 +130,21 @@ def is_doctest(msgid: str) -> bool:
     it are a separate pass, with their own prompt and their own check that every
     code line came back byte-identical. That pass is M8, after everything else
     works.
+
+    An example quoted from the middle has no ``>>>`` in it at all, only the
+    ``...`` continuations, and ``tutorial/errors.po`` has one that cost three
+    model calls in the first tier 1 run before dying. So an entry every line of
+    which is a continuation counts too. Every line, and more than one of them,
+    because 25 entries open with ``...`` and most are prose picking up a
+    sentence from the heading above them: "... install packages just for the
+    current user?" is a question, not a frame of a session.
     """
-    for line in msgid.split("\n"):
-        if line.strip():
-            return line.lstrip().startswith(_DOCTEST)
-    return False
+    lines = [line.lstrip() for line in msgid.split("\n") if line.strip()]
+    if not lines:
+        return False
+    if len(lines) > 1 and all(line.startswith(_CONTINUED) for line in lines):
+        return True
+    return lines[0].startswith(_DOCTEST)
 
 
 def is_literal_block(msgid: str) -> bool:
@@ -124,11 +163,57 @@ def is_literal_block(msgid: str) -> bool:
     and captured log output inside code samples. Sending any of these to a
     model, which is what the notes' rule would have done by falling through to
     prose, is the failure this classifier exists to prevent.
+
+    The indent rule is necessary and it is not sufficient, and the first real
+    tier 1 run is what proved it. 26 entries came back with nothing in the
+    memory after three attempts each, and every one of them was a block of code
+    this rule called prose: ``x = MyClass()``, ``import sound.effects.echo``,
+    ``source tutorial-env/bin/activate``. One line, or several with no indent
+    among them. The model did the right thing and returned them unchanged, and
+    then ``P05`` refused the answer for being identical to the source and
+    ``P08`` refused it for having no Vietnamese in it. Those two rules were 161
+    of the 206 refusals in that run, which is to say most of what the retry
+    ladder cost was spent arguing with a model that was already correct.
+
+    So a line that looks like code counts as well, and an entry counts when
+    every line of it does. That adds 738 entries over the whole corpus, 0.85 per
+    cent, and two random samples of them read as code with no prose in either.
     """
-    lines = msgid.split("\n")
-    if len(lines) < 2:
+    lines = [line for line in msgid.split("\n") if line.strip()]
+    if not lines:
         return False
-    return any(len(line) - len(line.lstrip()) >= _INDENT for line in lines if line.strip())
+    if any(_PROMPT.match(line.strip()) for line in lines):
+        return True
+    if all(_is_code(line.strip()) for line in lines):
+        return True
+    return len(lines) > 1 and any(len(line) - len(line.lstrip()) >= _INDENT for line in lines)
+
+
+def _is_code(line: str) -> bool:
+    """Whether one stripped line is code rather than a sentence."""
+    return bool(
+        _SHEBANG.match(line)
+        or _IMPORT.match(line)
+        or _ASSIGNMENT.match(line)
+        or _INVOCATION.match(line)
+        or _PATH.match(line)
+        or _tight(line)
+    )
+
+
+def _tight(line: str) -> bool:
+    """Whether the line is a call or a literal written with no prose spacing.
+
+    ``sorted(d.keys())`` and ``["echo", "surround"]`` are code. ``(Contributed
+    by Eddie Elizondo in :issue:`35810`.)`` and ``I/O control`` are sentences
+    that happen to start and end with the same characters, and an earlier
+    version of this rule sent both of them to passthrough. The thing that
+    separates them is spacing: code puts a space after a comma and nowhere
+    else, and English puts one between every pair of words.
+    """
+    if not _TIGHT.match(line):
+        return False
+    return all(line[i - 1] == "," for i, char in enumerate(line) if char == " " and i)
 
 
 def is_version_marker(msgid: str) -> bool:
