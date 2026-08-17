@@ -342,6 +342,13 @@ class TestFleetCommands:
         assert result.stdout.index("first:") < result.stdout.index("second:")
         assert result.stdout.index("second:") < result.stdout.index("wrote ")
 
+    def test_bench_on_a_route_that_does_not_exist(
+        self, route_file: Path, commands: FakeRunner
+    ) -> None:
+        result = runner.invoke(app, ["fleet", "bench", "--route", "nope", "--yes"])
+        assert result.exit_code == ExitCode.USAGE
+        assert "no route named nope" in result.stdout
+
 
 def _returning(results: list[fleet.Bench]) -> Callable[..., list[fleet.Bench]]:
     """A stand-in for ``_bench`` that spends no calls and answers what it is given.

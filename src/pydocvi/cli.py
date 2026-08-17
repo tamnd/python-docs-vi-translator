@@ -345,6 +345,9 @@ def fleet_bench(
         str, typer.Option(help="What to send.")
     ] = "Reply with the single word: ready.",
     yes: Annotated[bool, typer.Option("--yes", help="Skip the confirmation.")] = False,
+    route: Annotated[
+        list[str] | None, typer.Option(help="Measure only these routes. Repeatable.")
+    ] = None,
 ) -> None:
     """Measure calls per hour and safe concurrency, and write the report.
 
@@ -358,8 +361,23 @@ def fleet_bench(
     exited 0 and wrote a report saying every route does 0.0 calls per hour. A
     report of zeros is worse than no report, because the next estimate is
     computed off it.
+
+    ``--route`` exists because the second real run met a host that answers health
+    and never finishes a call. At a 1 200 second timeout and two retries that is
+    an hour a call and six hours for the route, and it stood between the run and
+    the two hosts behind it in the list. A sick host should cost its own
+    measurement and nobody else's.
     """
     known = _routes()
+    if route:
+        chosen = [one for one in known if one.name in route]
+        if unknown := sorted(set(route) - {one.name for one in known}):
+            console.print(f"[red]no route named {', '.join(unknown)}[/red]")
+            raise typer.Exit(ExitCode.USAGE)
+        known, absent = chosen, [one.name for one in known if one.name not in route]
+    else:
+        absent = []
+
     if missing := routes.missing_keys(known):
         console.print(f"[red]{', '.join(missing)} is not set in this shell[/red]")
         raise typer.Exit(ExitCode.FLEET_UNREACHABLE)
@@ -378,7 +396,9 @@ def fleet_bench(
     where.reports.mkdir(parents=True, exist_ok=True)
     target = where.reports / "fleet-bench.md"
     batches = len(batch.build(sync.read_corpus(where.upstream), root=where.upstream))
-    target.write_text(fleet.bench_markdown(results, batches=batches), encoding="utf-8")
+    target.write_text(
+        fleet.bench_markdown(results, batches=batches, absent=absent), encoding="utf-8"
+    )
     console.print(f"wrote {target}")
 
 

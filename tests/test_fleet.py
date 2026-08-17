@@ -250,6 +250,14 @@ class TestEstimates:
         assert "| a | 10 |" in report
         assert "**15.0**" in report
         assert "2,776 batches" in report
+        assert "Not measured" not in report
+
+    def test_a_route_that_was_not_measured_is_named(self) -> None:
+        """A reader who does not know a host is missing from the total reads it as
+        the whole fleet and plans off a number that is too small."""
+        results = [Bench(route="a", calls=10, failures=0, empty=0, seconds=3600.0, concurrency=4)]
+        report = bench_markdown(results, batches=2_776, absent=["b", "c"])
+        assert "Not measured, and not in the total: b, c." in report
 
 
 @pytest.mark.asyncio

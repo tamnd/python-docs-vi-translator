@@ -294,8 +294,14 @@ def hours_for(batches: int, calls_per_hour: float, *, retry_rate: float = 0.15) 
     return batches * (1 + retry_rate) / calls_per_hour
 
 
-def bench_markdown(results: Sequence[Bench], *, batches: int) -> str:
-    """The report ``fleet bench`` writes, and the source of every estimate."""
+def bench_markdown(results: Sequence[Bench], *, batches: int, absent: Sequence[str] = ()) -> str:
+    """The report ``fleet bench`` writes, and the source of every estimate.
+
+    A route that was not measured is named rather than left out silently. The
+    fleet total is the sum of what was measured, and a reader who does not know
+    a host is missing from it will read it as the whole fleet and plan off a
+    number that is too small.
+    """
     lines = [
         "# Fleet bench",
         "",
@@ -316,6 +322,11 @@ def bench_markdown(results: Sequence[Bench], *, batches: int) -> str:
         "at this rate, including retries.",
         "",
     ]
+    if absent:
+        lines += [
+            f"Not measured, and not in the total: {', '.join(absent)}.",
+            "",
+        ]
     return "\n".join(lines)
 
 

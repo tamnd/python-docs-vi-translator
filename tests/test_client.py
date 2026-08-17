@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import time
 from collections.abc import Iterator
 
@@ -167,6 +168,34 @@ class TestRetries:
         async with api:
             with pytest.raises(FleetError, match="HTTP 502 after 3 attempts"):
                 await api.complete(route, "x")
+
+    async def test_the_last_attempt_does_not_say_it_is_retrying(
+        self, route: Route, clock: FakeClock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """It said "retrying on the same route" on the attempt it gave up on,
+        which is how a route that never answers looked like one that was busy."""
+        api = Client(transport=transport(httpx.Response(502)), clock=clock, retries=0)
+        with caplog.at_level(logging.WARNING):
+            async with api:
+                with pytest.raises(FleetError):
+                    await api.complete(route, "x")
+        assert [record.getMessage() for record in caplog.records] == ["call failed, giving up"]
+
+    async def test_an_attempt_that_will_be_repeated_says_so(
+        self, route: Route, clock: FakeClock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        api = Client(
+            transport=transport(httpx.Response(502), ok(sse("Một."))),
+            clock=clock,
+            retries=1,
+            jitter=False,
+        )
+        with caplog.at_level(logging.WARNING):
+            async with api:
+                await api.complete(route, "x")
+        assert [record.getMessage() for record in caplog.records] == [
+            "call failed, retrying on the same route"
+        ]
 
     async def test_jitter_keeps_the_delay_in_a_sane_band(
         self, route: Route, clock: FakeClock
