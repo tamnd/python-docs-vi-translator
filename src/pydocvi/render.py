@@ -155,25 +155,33 @@ def system(terms: Sequence[Term] = (), *, name: str = TRANSLATE) -> str:
     return fill(template(name), terms)
 
 
-def user(batch: Batch) -> str:
+def user(batch: Batch, *, advice: str = "") -> str:
     """The file context line, then the numbered entries.
 
     Numbered from 1 for every batch, which is what ``P03`` checks the answer
     against. The entry's own segment id is not in the prompt and never will be:
     it is 40 characters of hex per entry that the model has no use for and can
     get wrong.
+
+    ``advice`` is what the second rung of the retry ladder adds: the specific
+    thing the last attempt got wrong, named. It goes above the entries rather
+    than below them, because the model has to know it before it reads them, and
+    it goes in the user message rather than in the system one so that the prompt
+    hash keeps meaning the prompt rather than the incident.
     """
     lines = [context_line(batch.path), ""]
+    if advice:
+        lines += [advice, ""]
     lines += [f"{number} {item.protected.text}" for number, item in enumerate(batch.items, 1)]
     return "\n".join(lines)
 
 
-def render(batch: Batch, glossary: Glossary, *, name: str = TRANSLATE) -> Prompt:
+def render(batch: Batch, glossary: Glossary, *, advice: str = "", name: str = TRANSLATE) -> Prompt:
     """Everything one call needs, from one batch."""
     terms = terms_for(batch, glossary)
     return Prompt(
         system=system(terms, name=name),
-        user=user(batch),
+        user=user(batch, advice=advice),
         terms=terms,
         fingerprint=fingerprint(name),
     )
