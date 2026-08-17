@@ -18,7 +18,9 @@ from rich.table import Table
 
 from pydocvi import (
     __version__,
+    apply,
     batch,
+    catalog,
     classify,
     config,
     curate,
@@ -233,6 +235,73 @@ def batch_command(
     for path, count in heaviest:
         files.add_row(path, f"{count:,}", f"{count / measured.batches:.1%}")
     console.print(files)
+
+
+@app.command(name="apply")
+def apply_command(
+    branch: Annotated[str, typer.Option(help="Which version the catalogs are of.")] = (
+        sync.DEFAULT_BRANCH
+    ),
+    check: Annotated[
+        bool, typer.Option("--check", help="Compare the content repo against the memory.")
+    ] = False,
+    file: Annotated[
+        Path | None, typer.Option("--file", help="One catalog, relative to upstream.")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print what would change and write nothing.")
+    ] = False,
+) -> None:
+    """Write the memory onto the catalogs, or check that it already is.
+
+    ``--check`` is the one CI runs. It renders every file from the same memory
+    and compares bytes, so a hand edit on the content repo fails the build by
+    name rather than being reverted by the next run and mentioned in a log.
+    """
+    where = config.paths()
+    memory = Memory.load(where.memory)
+    sources = _sources(where.upstream, file)
+    stamp = apply.Stamp(
+        project=f"Python {branch}",
+        run=time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime()),
+        generator=f"pydocvi {__version__}",
+    )
+    run = apply.check if check else apply.plan
+    result = run(sources, memory, root=where.upstream, into=where.content, stamp=stamp)
+
+    counts = result.counts
+    console.print(
+        f"{counts.written:,} written   {counts.kept:,} left to the reviewer   "
+        f"{counts.untranslated:,} still English"
+    )
+    for one in result.changed:
+        console.print(f"  {one.path.relative_to(where.content)}")
+
+    if check:
+        if result.clean:
+            console.print("[green]the catalogs are what the memory says they should be[/green]")
+            return
+        console.print(f"[red]{len(result.changed):,} file(s) differ from the memory[/red]")
+        raise typer.Exit(ExitCode.CHECK_FAILED)
+
+    if dry_run:
+        console.print(f"[yellow]dry run, {len(result.changed):,} file(s) would change[/yellow]")
+        return
+    console.print(f"wrote {len(apply.write(result)):,} file(s) to {where.content}")
+
+
+def _sources(upstream: Path, file: Path | None) -> list[Path]:
+    """The catalogs to apply, all of them or the one somebody named."""
+    if not upstream.exists():
+        console.print(f"[red]no upstream checkout at {upstream}[/red]")
+        raise typer.Exit(ExitCode.CHECK_FAILED)
+    if file is None:
+        return catalog.walk(upstream)
+    one = upstream / file
+    if not one.exists():
+        console.print(f"[red]no catalog at {one}[/red]")
+        raise typer.Exit(ExitCode.USAGE)
+    return [one]
 
 
 @prompt_app.command("show")
