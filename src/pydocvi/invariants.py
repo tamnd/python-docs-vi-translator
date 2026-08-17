@@ -71,7 +71,7 @@ def check_entry(
         _p02(msgid, msgstr, spans),
         _p04(msgid, msgstr),
         _p05(msgid, msgstr),
-        _p06(msgstr),
+        _p06(msgid, msgstr),
         _p07(msgstr),
         _p08(msgstr),
         _p09(msgid, msgstr, spans),
@@ -163,9 +163,17 @@ def _p05(msgid: str, msgstr: str) -> Violation | None:
     return None
 
 
-def _p06(msgstr: str) -> Violation | None:
-    """No narration, in either language."""
-    found = textguard.find(msgstr)
+def _p06(msgid: str, msgstr: str) -> Violation | None:
+    """No narration, in either language, that the source did not license.
+
+    Against the pair rather than the translation alone. The English is what
+    decides whether "Lưu ý:" opening a string is the model talking or the model
+    translating a ``msgid`` that opens with "Note:", and reading the Vietnamese
+    on its own cannot tell those apart. It got it wrong in the first real run and
+    threw away a whole batch of good translations for it, which this rule can do
+    because it is one of the three that reject the batch rather than the entry.
+    """
+    found = textguard.find(msgstr, msgid)
     return Violation(rule="P06", detail=str(found)) if found else None
 
 

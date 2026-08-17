@@ -171,3 +171,20 @@ class TestProperties:
         if not msgid.strip():
             return
         assert "P05" in rules(msgid, msgid)
+
+
+class TestP06AgainstThePair:
+    """``P06`` reads the English too, because it is one of the three rules that
+    condemns the whole batch and so the one that can least afford to be wrong."""
+
+    def test_a_translated_note_is_not_narration(self) -> None:
+        broken = invariants.check_entry(
+            "Note: this is unsupported.", "Lưu ý: điều này không được hỗ trợ.", ()
+        )
+        assert broken == []
+
+    def test_narration_the_source_did_not_license_still_fails(self) -> None:
+        broken = invariants.check_entry(
+            "Return a sorted list.", "Đây là bản dịch: trả về danh sách.", ()
+        )
+        assert [one.rule for one in broken] == ["P06"]
