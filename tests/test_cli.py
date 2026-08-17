@@ -562,7 +562,9 @@ class TestARunThatAcceptedNothing:
         runner.invoke(app, ["glossary", "mine", "--minimum", "1", "--limit", "5"])
         earlier = content / "manifests" / "glossary-proposed.yaml"
         earlier.parent.mkdir(parents=True, exist_ok=True)
-        earlier.write_text('version: 0\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        earlier.write_text(
+            'version: 0\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n', encoding="utf-8"
+        )
         runner.invoke(app, ["glossary", "curate", "--yes"])
         assert glossary.load(earlier).terms[0].en == "iterable"
 
