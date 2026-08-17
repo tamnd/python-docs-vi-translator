@@ -41,15 +41,41 @@ TERM_CHARACTERS = 48
 #: label on an index page, not something to ask a model to render.
 MIN_LETTERS = 2
 
-#: Words that never begin or end a term. Short on purpose: the list exists to
-#: stop "of the" and "the following" from becoming candidates, not to be a
-#: grammar. Every word wrongly in here is a term the mine will never propose,
-#: and that failure is silent, so the bar for adding one is high.
+#: Words that may not appear anywhere in a term. Every word wrongly in here is a
+#: term the mine will never propose, and that failure is silent, so the bar for
+#: adding one is high: nothing goes in that could be a row in the contract.
+#:
+#: The list was short on purpose and the first real run over the corpus showed
+#: that short was wrong. The spec asks this source for noun phrases. What it
+#: gave back was changelog prose, because a documentation corpus is mostly
+#: English and English words outrank terminology on raw count. ``now`` came
+#: back 6,601 times, above every real term in the corpus, and 70% of the 728
+#: single-word candidates were ordinary dictionary words.
+#:
+#: So the words below are closed-class, plus verbs and adverbs that carry no
+#: technical sense. A determiner or a preposition can never be a glossary row,
+#: which is what makes them safe to list. Words that read like prose but are
+#: also Python terms are deliberately absent: ``set``, ``type``, ``list``,
+#: ``class``, ``object``, ``value``, ``name``, ``call``, ``return``, ``file``,
+#: ``string``, ``code``, ``data``, ``error``, ``module``, ``next``, ``get`` and
+#: ``help`` all stay out even though every one of them is common English.
 _STOPWORDS = """
-a an and any are as at be been by can could do does for from has have if in
-into is it its may must no not of on or should so some such than that the
-their them then there these they this those to use used using was were what
-when where which while will with would you your
+a about above after again against all almost along already also although always
+among an and another any are around as at back be because become becomes been
+before behind being below beside besides between beyond both but by came can
+come comes could currently do does during each either else enough especially
+even ever every except few first for from further give given gives go goes had
+has have he her here him his how however i if in instead into is it its itself
+just least less let like likely made make makes making many may me might more
+most much must my near neither never no not now of often on once one ones only
+or other others otherwise our out outside over own per perhaps please
+previously rather really same see seen several she should show shown simply
+since so some still such take taken takes than that the their theirs them
+themselves then there therefore these they this those though through throughout
+thus to together too toward towards try under unless until up upon us use used
+using usually very via want was way we well were what whatever when whenever
+where whether which while who whom whose why will with within without would yet
+you your yourself
 """
 
 STOPWORDS = frozenset(_STOPWORDS.split())
@@ -247,9 +273,14 @@ def from_frequency(
     out, so counting over the stripped text is the same operation the prompt
     builder does and needs no second definition of what a span is.
 
-    Phrases are one to three words with no stopword at either end. That is not a
-    noun-phrase grammar and does not claim to be. It is the cheapest filter that
-    keeps "context manager" and drops "of the".
+    Phrases are one to three words with no stopword anywhere in them. That is
+    not a noun-phrase grammar and does not claim to be. It is the cheapest
+    filter that keeps "context manager" and drops "of the".
+
+    Anywhere rather than at the ends, which is what it used to be. Checking the
+    ends only lets a stopword sit in the middle, and the middle is where the
+    changelog puts it: "patch by victor", "contributed by serhiy" and "see for
+    more" were all candidates on the first real run.
 
     A phrase carrying an apostrophe is dropped rather than asked about. Every
     one of them is a contraction or a possessive, and asking a model to render
@@ -279,7 +310,7 @@ def _phrases(text: str) -> dict[str, int]:
         for size in range(1, MAX_WORDS + 1):
             for start in range(len(run) - size + 1):
                 window = run[start : start + size]
-                if window[0] in STOPWORDS or window[-1] in STOPWORDS:
+                if any(word in STOPWORDS for word in window):
                     continue
                 phrase = " ".join(window)
                 counts[phrase] = counts.get(phrase, 0) + 1

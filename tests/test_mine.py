@@ -172,6 +172,46 @@ class TestFrequencySource:
         found = {candidate.en for candidate in mine.from_frequency(["module of"] * 10, minimum=8)}
         assert "module of" not in found
 
+    def test_a_phrase_with_a_stopword_in_the_middle_is_not_proposed(self):
+        """The changelog puts the stopword in the middle, not at the ends.
+
+        Checking the ends only, which is what this used to do, let "patch by
+        victor" and "contributed by serhiy" onto the first real candidate list.
+        """
+        found = {
+            candidate.en for candidate in mine.from_frequency(["patch by victor"] * 10, minimum=8)
+        }
+        assert "patch by victor" not in found
+
+    def test_the_words_either_side_of_it_are_still_proposed(self):
+        found = {
+            candidate.en for candidate in mine.from_frequency(["patch by victor"] * 10, minimum=8)
+        }
+        assert {"patch", "victor"} <= found
+
+    def test_an_adverb_is_not_a_term(self):
+        """``now`` was the highest-count candidate on the corpus at 6,601.
+
+        Above every real term, because a documentation corpus is mostly English
+        and English outranks terminology on raw count.
+        """
+        found = {
+            candidate.en for candidate in mine.from_frequency(["module now works"] * 10, minimum=8)
+        }
+        assert "now" not in found
+
+    def test_a_word_that_is_prose_and_a_python_term_is_still_proposed(self):
+        """``set``, ``type`` and ``list`` are common English and real terms.
+
+        They are the reason the stopword list is closed-class. A list that went
+        after common words instead of function words would take these with it.
+        """
+        found = {
+            candidate.en
+            for candidate in mine.from_frequency(["set type list class value"] * 10, minimum=8)
+        }
+        assert {"set", "type", "list", "class", "value"} <= found
+
     def test_a_phrase_never_crosses_a_comma(self):
         found = {
             candidate.en for candidate in mine.from_frequency(["module, function"] * 10, minimum=8)
