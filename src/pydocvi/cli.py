@@ -31,6 +31,8 @@ from pydocvi import (
     render,
     routes,
     sync,
+    translate,
+    worker,
 )
 from pydocvi.catalog import Catalog
 from pydocvi.client import Client
@@ -235,6 +237,173 @@ def batch_command(
     for path, count in heaviest:
         files.add_row(path, f"{count:,}", f"{count / measured.batches:.1%}")
     console.print(files)
+
+
+@app.command(name="translate")
+def translate_command(
+    tier: Annotated[int | None, typer.Option(help="Which tier, 1 to 6.")] = None,
+    file: Annotated[
+        Path | None, typer.Option("--file", help="One catalog, relative to upstream.")
+    ] = None,
+    limit: Annotated[int | None, typer.Option(help="Stop after this many calls.")] = None,
+    resume: Annotated[
+        bool, typer.Option("--resume", help="Work what is already queued and queue nothing new.")
+    ] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Say what it would cost and spend nothing.")
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes", help="Skip the confirmation.")] = False,
+) -> None:
+    """Translate a tier, or a file, and write what came back to the memory.
+
+    The expensive command. It spends a model call per batch and it is the only
+    thing in this tool that does, so it dry-runs first, prints what the last
+    ``fleet bench`` says the wall clock will be, and asks.
+
+    Batches every entry of which the memory already holds are dropped before
+    anything is queued, which is what makes a second pass over a tier cost
+    almost nothing. What is queued is content-addressed on the file, the
+    entries, the prompt and the glossary version, so a prompt change re-queues
+    the corpus and an interrupted run picks up exactly where it stopped.
+    """
+    where = config.paths()
+    known = _working_routes()
+    batches = _selected(where.upstream, tier=tier, file=file)
+    run = translate.Run(
+        queue=queue.Queue(where.queue, queue.Stage.TRANSLATE),
+        memory=Memory.load(where.memory),
+        glossary=glossary.load(where.glossary),
+        batches=batches,
+        run=time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime()),
+    )
+
+    pending = len(run.queue)
+    if resume:
+        console.print(f"resuming: {pending:,} batches already queued, queueing nothing new")
+    else:
+        plan = run.plan(run.untranslated(batches), tier=tier, write=not dry_run)
+        # str() rather than the object, because rich renders a dataclass as its
+        # repr and would print the fields instead of the sentence.
+        console.print(str(plan))
+        # On a dry run nothing was written, so what the queue holds and what the
+        # plan would have added are two separate numbers and the estimate wants
+        # both. On a real run the second is already inside the first.
+        pending = len(run.queue) + (plan.queued if dry_run else 0)
+    console.print(_wall_clock(where, pending))
+
+    if dry_run:
+        return
+    if not pending:
+        console.print("nothing outstanding, every batch in the selection is already done")
+        return
+    if missing := routes.missing_keys(known):
+        console.print(f"[red]{', '.join(missing)} is not set in this shell[/red]")
+        raise typer.Exit(ExitCode.FLEET_UNREACHABLE)
+    if not yes:
+        typer.confirm(f"{pending:,} batches to call, continue?", abort=True)
+
+    _translated(run, asyncio.run(_translate(run, known, limit=limit)))
+
+
+def _selected(upstream: Path, *, tier: int | None, file: Path | None) -> list[batch.Batch]:
+    """The batches a person asked for, by tier or by file or all of them."""
+    batches = batch.build(_catalogs(upstream, file), root=upstream)
+    if tier is not None:
+        try:
+            batches = batch.of_tier(batches, tier)
+        except batch.TierError as error:
+            console.print(f"[red]{error}[/red]")
+            raise typer.Exit(ExitCode.USAGE) from error
+    if not batches:
+        console.print("[red]nothing to translate in that selection[/red]")
+        raise typer.Exit(ExitCode.USAGE)
+    return batches
+
+
+def _catalogs(upstream: Path, file: Path | None) -> list[Catalog]:
+    """The corpus, or the one file of it somebody named.
+
+    Filtered after reading rather than read on its own, because a batch carries
+    the path it came from and the two paths have to agree. Reading one file by a
+    different route was how the first version of this produced batches whose
+    ``file`` was absolute and whose traces could not be found.
+    """
+    corpus = _corpus(upstream)
+    if file is None:
+        return corpus
+    wanted = (upstream / file).resolve()
+    found = [one for one in corpus if one.path.resolve() == wanted]
+    if not found:
+        console.print(f"[red]no catalog at {upstream / file}[/red]")
+        raise typer.Exit(ExitCode.USAGE)
+    return found
+
+
+async def _translate(
+    run: translate.Run, known: Sequence[routes.Route], *, limit: int | None
+) -> worker.Progress:
+    """Drain the translate queue through the fleet.
+
+    The memory is written whatever happens, including a Ctrl-C, which is what
+    the ``finally`` is for. Losing an hour of calls to a keystroke is the
+    failure this whole stage is arranged to avoid.
+    """
+    async with Client() as client:
+        pool = worker.Worker(
+            queue=run.queue,
+            router=routes.Router.of(known),
+            client=client,
+            build=run.build,
+            handle=run.handle,
+            limit=limit,
+        )
+        try:
+            return await pool.run()
+        finally:
+            run.save(force=True)
+
+
+def _translated(run: translate.Run, progress: worker.Progress) -> None:
+    """The lines a person reads when a run stops, however it stopped."""
+    tally = run.tally
+    console.print(
+        f"{progress.done:,} calls in {progress.seconds / 3600:.1f}h "
+        f"at {progress.calls_per_hour:.1f} calls/hour, "
+        f"{progress.empty:,} empty, {progress.failed:,} failed"
+    )
+    console.print(
+        f"{tally.accepted:,} entries accepted, {tally.refused:,} refused, "
+        f"{tally.rejected:,} batches refused whole, {tally.dead:,} entries out of rungs"
+    )
+    if tally.by_rule:
+        table = Table(title="refusals", box=None)
+        table.add_column("rule")
+        table.add_column("count", justify="right")
+        for rule, count in sorted(tally.by_rule.items()):
+            table.add_row(rule, f"{count:,}")
+        console.print(table)
+    for rung, count in sorted(tally.by_attempt.items()):
+        console.print(f"rung {rung}: {count:,} refusals")
+
+
+def _wall_clock(where: config.Paths, batches: int) -> str:
+    """What the last bench says this will take.
+
+    Named as an absence when there has not been one. A default rate would print
+    a number that looks measured and is not, and the estimate is the thing the
+    person is deciding on.
+    """
+    target = where.reports / "fleet-bench.json"
+    if not target.exists():
+        return "no fleet bench on record, so no estimate. Run pydocvi fleet bench first"
+    measured = fleet.Measured.from_json(target.read_text(encoding="utf-8"))
+    if measured.calls_per_hour <= 0:
+        return "the last fleet bench measured no calls, so no estimate"
+    hours = fleet.hours_for(batches, measured.calls_per_hour)
+    return (
+        f"about {hours:.1f}h at the measured {measured.calls_per_hour:.1f} calls/hour "
+        f"over {', '.join(measured.routes)}, retries included"
+    )
 
 
 @app.command(name="apply")
@@ -619,7 +788,13 @@ def fleet_bench(
     target.write_text(
         fleet.bench_markdown(results, batches=batches, absent=absent), encoding="utf-8"
     )
-    console.print(f"wrote {target}")
+    # The same measurement twice, once for a person and once for `translate`,
+    # which has to print what a tier costs before it spends anything. Reading the
+    # number back out of the markdown would be a parser for this project's own
+    # report and would break silently the first time a column moved.
+    sidecar = where.reports / "fleet-bench.json"
+    sidecar.write_text(fleet.Measured.of(results, batches=batches).as_json(), encoding="utf-8")
+    console.print(f"wrote {target} and {sidecar}")
 
 
 def _bench_line(result: fleet.Bench) -> None:

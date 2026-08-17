@@ -238,6 +238,28 @@ class Queue:
             log.error("job dead", extra={"job": job.id, "attempts": job.attempts, "error": error})
         return state
 
+    def bury(self, job: Job, *, error: str) -> None:
+        """Put a job straight into ``dead``, whatever its attempt count says.
+
+        For a failure that more attempts cannot fix, which :meth:`release` has
+        no way to express: it decides from the counter, and the counter is about
+        the transport. A batch whose entries have been through all three rungs
+        of the translation ladder has not run out of claims, it has run out of
+        things left to try, and the audit has to be able to name it either way.
+        """
+        self._move(
+            Job(
+                id=job.id,
+                stage=job.stage,
+                payload=job.payload,
+                attempts=job.attempts,
+                route=job.route,
+                error=error,
+            ),
+            State.DEAD,
+        )
+        log.error("job buried", extra={"job": job.id, "error": error})
+
     def reap(self, now: float) -> list[Job]:
         """Return every expired lease to the queue.
 

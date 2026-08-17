@@ -12,6 +12,7 @@ looks exactly like a model problem and has cost hours.
 """
 
 import asyncio
+import json
 import logging
 import shlex
 import subprocess
@@ -420,6 +421,48 @@ class Bench:
             seconds=wall,
             concurrency=route.concurrency,
             latency=sum(durations) / len(durations) if durations else 0.0,
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Measured:
+    """The last bench as a number, beside the table written for people.
+
+    ``translate`` has to print what a tier will cost before it spends anything,
+    and the spec is clear that the estimate comes from the last bench rather
+    than from a table somebody wrote before anything had run. Reading it back
+    out of the markdown would be a parser for this project's own report, which
+    would break the first time a column moved and would break silently.
+    """
+
+    calls_per_hour: float
+    batches: int
+    routes: tuple[str, ...] = ()
+
+    def as_json(self) -> str:
+        payload = {
+            "version": 1,
+            "calls_per_hour": round(self.calls_per_hour, 3),
+            "batches": self.batches,
+            "routes": list(self.routes),
+        }
+        return json.dumps(payload, indent=1, sort_keys=True) + "\n"
+
+    @classmethod
+    def from_json(cls, text: str) -> Self:
+        payload = json.loads(text)
+        return cls(
+            calls_per_hour=float(payload.get("calls_per_hour", 0.0)),
+            batches=int(payload.get("batches", 0)),
+            routes=tuple(payload.get("routes") or ()),
+        )
+
+    @classmethod
+    def of(cls, results: Sequence[Bench], *, batches: int) -> Self:
+        return cls(
+            calls_per_hour=sum(result.calls_per_hour for result in results),
+            batches=batches,
+            routes=tuple(result.route for result in results),
         )
 
 

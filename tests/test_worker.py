@@ -5,8 +5,14 @@ import pytest
 from conftest import FakeClient, FakeClock, make_route
 from pydocvi.client import Answer, FleetError, Usage
 from pydocvi.queue import Job, Queue, Stage, State
+from pydocvi.render import Prompt
 from pydocvi.routes import BASE_COOLDOWN, Router
 from pydocvi.worker import IDLE_POLL, Progress, Worker
+
+
+def asking(user: str, system: str = "you are a translator") -> Prompt:
+    """The pair of messages a build returns, with nothing interesting in it."""
+    return Prompt(system=system, user=user)
 
 
 def make_queue(tmp_path: Path, count: int = 1) -> Queue:
@@ -38,7 +44,7 @@ def make_worker(
         queue=queue,
         router=router or Router.of([make_route("a")]),
         client=client or FakeClient(),
-        build=lambda job: f"translate {job.id}",
+        build=lambda job: asking(f"translate {job.id}"),
         handle=handle,
         clock=clock or FakeClock(),
         limit=limit,
@@ -72,7 +78,7 @@ class TestDraining:
             queue=queue,
             router=Router.of([make_route("a")]),
             client=FakeClient(),
-            build=lambda job: "x",
+            build=lambda job: asking("x"),
             handle=handle,
             clock=FakeClock(),
         )
@@ -84,6 +90,15 @@ class TestDraining:
         worker, _ = make_worker(make_queue(tmp_path, 1), client=client)
         await worker.run()
         assert client.calls == [("a", "translate job000")]
+
+    async def test_the_system_message_goes_over_too(self, tmp_path: Path) -> None:
+        """The whole translating instruction and the batch's terminology are in
+        it. A worker that built both messages and sent one would produce a run
+        whose prompt hash described a prompt the model never saw."""
+        client = FakeClient()
+        worker, _ = make_worker(make_queue(tmp_path, 1), client=client)
+        await worker.run()
+        assert client.systems == ["you are a translator"]
 
     async def test_an_empty_queue_returns_immediately(self, tmp_path: Path) -> None:
         worker, _ = make_worker(make_queue(tmp_path, 0))
@@ -273,7 +288,7 @@ class TestStageFailures:
             queue=queue,
             router=Router.of([make_route("a")]),
             client=FakeClient(),
-            build=lambda job: "x",
+            build=lambda job: asking("x"),
             handle=refuse,
             clock=FakeClock(),
         )
@@ -293,7 +308,7 @@ class TestStageFailures:
             queue=queue,
             router=Router.of([make_route("a", concurrency=4)]),
             client=FakeClient(),
-            build=lambda job: "x",
+            build=lambda job: asking("x"),
             handle=refuse,
             clock=FakeClock(),
         )
