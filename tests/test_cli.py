@@ -1301,3 +1301,91 @@ def _remember(workspace: Path, msgid: str, msgstr: str) -> Memory:
     memory = Memory([Segment(id=segment_id(msgid), msgid=msgid, msgstr=msgstr, source="machine")])
     memory.save(workspace / "work" / "memory.json")
     return memory
+
+
+def _edited(workspace: Path, content: Path) -> Path:
+    """A content catalog whose English somebody touched by one character.
+
+    Applied first rather than written by hand, because a ``.po`` file with no
+    header is not a catalog and the parser refuses it before any check gets to
+    look, which would make ``S02`` pass for a reason that has nothing to do with
+    ``S02``.
+    """
+    _remember(workspace, "Dealing with Bugs", "Xử lý lỗi")
+    runner.invoke(app, ["apply"])
+    target = content / "bugs.po"
+    text = target.read_text(encoding="utf-8")
+    target.write_text(
+        text.replace('msgid "Dealing with Bugs"', 'msgid "Dealing with Bug"'), "utf-8"
+    )
+    return target
+
+
+class TestAudit:
+    """``pydocvi audit``.
+
+    Every one of these runs the real registry over a scratch corpus, so they
+    also catch a check that raises rather than yielding on an empty repository,
+    which is the state a new content checkout is in.
+    """
+
+    def test_a_clean_corpus_exits_zero(self, workspace: Path, content: Path) -> None:
+        _remember(workspace, "Dealing with Bugs", "Xử lý lỗi")
+        runner.invoke(app, ["apply"])
+        result = runner.invoke(app, ["audit", "--only", "H01,H05"])
+        assert result.exit_code == ExitCode.OK
+        assert "2 checks" in result.stdout
+
+    def test_a_failing_hard_check_exits_one(self, workspace: Path, content: Path) -> None:
+        _edited(workspace, content)
+        result = runner.invoke(app, ["audit", "--only", "S02"])
+        assert result.exit_code == ExitCode.CHECK_FAILED
+        assert "S02" in result.stdout
+
+    def test_an_unknown_check_is_a_usage_error(self, workspace: Path, content: Path) -> None:
+        result = runner.invoke(app, ["audit", "--only", "P99"])
+        assert result.exit_code == ExitCode.USAGE
+        assert "P99" in result.stdout
+
+    def test_another_language_is_refused_rather_than_ignored(
+        self, workspace: Path, content: Path
+    ) -> None:
+        """A flag that silently ignored what it was given would be worse than
+        one that refuses."""
+        result = runner.invoke(app, ["audit", "--lang", "fr"])
+        assert result.exit_code == ExitCode.USAGE
+        assert "vi" in result.stdout
+
+    def test_no_content_repo_is_a_usage_error(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PYDOCVI_CONTENT", "/nonexistent/content")
+        assert runner.invoke(app, ["audit"]).exit_code == ExitCode.USAGE
+
+    def test_json_is_a_finding_list_and_not_a_table(self, workspace: Path, content: Path) -> None:
+        _edited(workspace, content)
+        result = runner.invoke(app, ["audit", "--only", "S02", "--json"])
+        payload = json.loads(result.stdout)
+        assert payload["failing"] == ["S02"]
+        assert payload["findings"][0]["check"] == "S02"
+
+    def test_the_report_is_written_where_it_was_asked_for(
+        self, workspace: Path, content: Path, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "reports" / "audit.md"
+        runner.invoke(app, ["audit", "--only", "H01", "--report", str(target)])
+        assert target.read_text(encoding="utf-8").startswith("# Audit")
+
+    def test_skip_leaves_a_check_out(self, workspace: Path, content: Path) -> None:
+        result = runner.invoke(app, ["audit", "--only", "H", "--skip", "H01"])
+        assert "H01" not in result.stdout
+
+    def test_a_soft_failure_only_counts_when_it_was_asked_to(
+        self, workspace: Path, content: Path
+    ) -> None:
+        """``bạn`` where the English addresses nobody, which is ``L05`` and soft."""
+        _remember(workspace, "Dealing with Bugs", "Xử lý lỗi của bạn")
+        runner.invoke(app, ["apply"])
+        assert runner.invoke(app, ["audit", "--only", "L05"]).exit_code == ExitCode.OK
+        soft = runner.invoke(app, ["audit", "--only", "L05", "--fail-soft"])
+        assert soft.exit_code == ExitCode.CHECK_FAILED

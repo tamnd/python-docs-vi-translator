@@ -15,8 +15,11 @@ from pathlib import Path
 
 import pytest
 
+from pydocvi.audit.model import Body, Corpus, Finding
+from pydocvi.catalog import Catalog, Entry
 from pydocvi.client import Answer, Usage
 from pydocvi.fleet import Ran
+from pydocvi.memory import Segment
 from pydocvi.routes import Route
 
 UPSTREAM = Path.home() / "github" / "tamnd" / "python-docs-vi"
@@ -159,3 +162,61 @@ def make_route(name: str = "server3", **overrides: object) -> Route:
 @pytest.fixture
 def route() -> Route:
     return make_route()
+
+
+def entry(msgid: str, msgstr: str = "", **overrides: object) -> Entry:
+    """One entry, fuzzy by default because everything this tool writes is.
+
+    Fuzzy by default so that a test about placeholders does not have to think
+    about ``S04``, which is a different check with its own tests.
+    """
+    values: dict[str, object] = {"msgid": msgid, "msgstr": msgstr, "flags": ("fuzzy",)}
+    values.update(overrides)
+    return Entry(**values)  # type: ignore[arg-type]
+
+
+def catalog_of(*entries: Entry, name: str = "library/one.po", root: Path | None = None) -> Catalog:
+    """A catalog with a plausible header and the entries handed in."""
+    header = Entry(msgid="", msgstr="Project-Id-Version: Python 3.15\nLanguage: vi\n")
+    return Catalog(
+        path=(root or Path("/corpus")) / name,
+        header=header,
+        entries=tuple(entries),
+    )
+
+
+def corpus_of(*catalogs: Catalog, root: Path | None = None, **overrides: object) -> Corpus:
+    """A corpus around some catalogs, with nothing else in it.
+
+    Everything a check might want is left out unless a test asks for it, which
+    is the same shape :func:`pydocvi.audit.assemble` produces when a file is
+    missing, and the same shape the checks are written to survive.
+    """
+    values: dict[str, object] = {"root": root or Path("/corpus"), "catalogs": catalogs}
+    values.update(overrides)
+    return Corpus(**values)  # type: ignore[arg-type]
+
+
+def upstream_of(*catalogs: Catalog, root: Path | None = None) -> dict[str, Catalog]:
+    """The pin, keyed the way :func:`pydocvi.audit.assemble` keys it.
+
+    By path relative to the upstream root, because that is the only thing a
+    content catalog and an upstream catalog have in common: they live in
+    different checkouts and the checks pair them up by name.
+    """
+    where = root or Path("/corpus")
+    return {one.path.relative_to(where).as_posix(): one for one in catalogs}
+
+
+def findings(check: Body, corpus: Corpus) -> list[Finding]:
+    """What one check finds, called directly rather than through the registry.
+
+    Directly, because the decorator hands the function straight back, and a test
+    that went through the registry would be testing the registry as well as the
+    rule and would fail for two unrelated reasons.
+    """
+    return list(check(corpus))
+
+
+def machine_segment(msgid: str, msgstr: str, **provenance: object) -> Segment:
+    return Segment.from_entry(Entry(msgid=msgid, msgstr=msgstr), source="machine", **provenance)

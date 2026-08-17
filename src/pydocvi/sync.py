@@ -55,6 +55,54 @@ class Pin:
             f"  translated: {self.translated}\n"
         )
 
+    @classmethod
+    def from_yaml(cls, text: str) -> Pin:
+        """Read a pin back.
+
+        Hand-rolled for the same reason :meth:`as_yaml` is, and deliberately
+        narrow: it reads the eight scalars that method writes and refuses
+        anything else. ``S01`` exists to catch a pin that has drifted from the
+        corpus, so a reader that shrugged at a malformed file would be checking
+        nothing at exactly the moment it mattered.
+        """
+        values: dict[str, str] = {}
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            key, separator, value = stripped.partition(":")
+            if separator and value.strip():
+                values[key.strip()] = value.strip().strip("'\"")
+        missing = {"repo", "branch", "commit", "files", "entries", "words", "characters"} - set(
+            values
+        )
+        if missing:
+            raise PinError(f"pin is missing {', '.join(sorted(missing))}")
+        try:
+            return cls(
+                repo=values["repo"],
+                branch=values["branch"],
+                commit=values["commit"],
+                files=int(values["files"]),
+                entries=int(values["entries"]),
+                words=int(values["words"]),
+                characters=int(values["characters"]),
+                translated=int(values.get("translated", 0)),
+            )
+        except ValueError as error:
+            raise PinError(f"pin has a count that is not a number: {error}") from error
+
+    @classmethod
+    def read(cls, path: Path) -> Pin | None:
+        """The pin on disk, or ``None`` where there is not one yet."""
+        if not path.exists():
+            return None
+        return cls.from_yaml(path.read_text(encoding="utf-8"))
+
+
+class PinError(ValueError):
+    """A pin file this module cannot read."""
+
 
 def quote(value: str) -> str:
     """Quote a YAML scalar that would otherwise read as a number.
