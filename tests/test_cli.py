@@ -315,6 +315,26 @@ class TestFleetCommands:
         assert result.exit_code == ExitCode.OK
         assert spent == ["a"]
 
+    def test_a_disabled_route_is_named_in_the_report(
+        self, two_routes: Path, commands: FakeRunner, workspace: Path
+    ) -> None:
+        """Switching the sick host off made it drop out of the report silently,
+        which is what the line was added to prevent in the first place."""
+        measured = [
+            fleet.Bench(
+                route="a", calls=1, failures=0, empty=0, seconds=60.0, concurrency=1, latency=60.0
+            )
+        ]
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr("pydocvi.cli._bench", _returning(measured))
+        try:
+            result = runner.invoke(app, ["fleet", "bench", "--calls", "1", "--yes"])
+        finally:
+            monkeypatch.undo()
+        assert result.exit_code == ExitCode.OK
+        report = (config.paths().reports / "fleet-bench.md").read_text(encoding="utf-8")
+        assert "Not measured, and not in the total: b." in report
+
     def test_status_shows_a_route_that_is_switched_off(
         self, two_routes: Path, commands: FakeRunner
     ) -> None:

@@ -397,16 +397,20 @@ def fleet_bench(
     an hour a call and six hours for the route, and it stood between the run and
     the two hosts behind it in the list. A sick host should cost its own
     measurement and nobody else's.
+
+    Anything in the route file that was not measured is named in the report,
+    whether it was left out by ``--route`` or switched off in the file. Switching
+    the sick host off made it drop out of the report silently, which is the thing
+    the line was added to prevent.
     """
+    every = _routes()
     known = _working_routes()
     if route:
-        chosen = [one for one in known if one.name in route]
         if unknown := sorted(set(route) - {one.name for one in known}):
             console.print(f"[red]no route named {', '.join(unknown)}[/red]")
             raise typer.Exit(ExitCode.USAGE)
-        known, absent = chosen, [one.name for one in known if one.name not in route]
-    else:
-        absent = []
+        known = [one for one in known if one.name in route]
+    absent = [one.name for one in every if one.name not in {other.name for other in known}]
 
     if missing := routes.missing_keys(known):
         console.print(f"[red]{', '.join(missing)} is not set in this shell[/red]")
