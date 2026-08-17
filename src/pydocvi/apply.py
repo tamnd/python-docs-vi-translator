@@ -1,0 +1,348 @@
+"""The memory and the upstream catalogs into .po files.
+
+``apply`` calls no model and reads no clock. Given a memory, a set of upstream
+catalogs and a stamp, it produces the exact bytes of every file in the content
+repo, which is what makes ``--check`` possible: CI renders the same inputs and
+compares, and a hand edit on the content repo fails the build by name instead of
+being overwritten on the next run and mentioned in a log.
+
+The content repo is a projection. It can be deleted and rebuilt from the memory,
+and nothing in it is a source of truth except the strings a person has reviewed,
+which is why those are the one thing this module will not write over.
+
+Structure comes from upstream and translations come from the memory. Upstream
+owns which strings exist, in what order, with which source references and
+extracted comments; the memory owns what they say in Vietnamese. Keeping those
+apart is what lets one memory serve several version branches, since the 85 192
+strings 3.14 and 3.15 share are the same segments in a different arrangement.
+"""
+
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+from pydocvi import catalog, classify
+from pydocvi.catalog import Catalog, Entry
+from pydocvi.memory import Memory, Segment
+
+#: Written into every header, in plain words rather than as a version string.
+#: It is the first thing anybody who opens one of these files in Poedit sees,
+#: and it should tell them what they are looking at.
+LAST_TRANSLATOR = "pydocvi (machine translation, unreviewed)"
+
+LANGUAGE_TEAM = "Vietnamese <tamnd@liteio.dev>"
+LANGUAGE = "vi"
+
+#: Vietnamese has no plural inflection, so gettext gets one form and no rule.
+PLURAL_FORMS = "nplurals=1; plural=0;"
+
+#: The header block ``apply`` owns, in order. Everything else upstream put in
+#: the header is left where it was.
+CONTENT_TYPE = "text/plain; charset=UTF-8"
+TRANSFER_ENCODING = "8bit"
+
+#: How many characters of the prompt hash go in the provenance comment. Eight is
+#: enough to name a prompt in a corpus that will hold a handful of them, and
+#: short enough that the comment stays on one line.
+PROMPT_CHARS = 8
+
+MARKER = "# pydocvi:"
+
+
+class ApplyError(ValueError):
+    """The catalogs and the memory disagree in a way writing cannot resolve."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Stamp:
+    """What every file written by one run says about that run.
+
+    Passed in rather than read from a clock, because a function that reads the
+    time is a function whose output cannot be compared with anything. ``--check``
+    renders with the stamp taken from the file it is checking, so the timestamp
+    never makes a clean tree look dirty.
+    """
+
+    project: str
+    run: str
+    generator: str
+    revision: str = ""
+
+    @property
+    def revised(self) -> str:
+        """The header's ``PO-Revision-Date``, which defaults to the run."""
+        return self.revision or self.run
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Counts:
+    """What happened to the entries of one file, or of a corpus."""
+
+    written: int = 0
+    kept: int = 0
+    untranslated: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.written + self.kept + self.untranslated
+
+    def __add__(self, other: Counts) -> Counts:
+        return Counts(
+            written=self.written + other.written,
+            kept=self.kept + other.kept,
+            untranslated=self.untranslated + other.untranslated,
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Plan:
+    """One file's worth of output, and whether it differs from what is there.
+
+    The bytes are held rather than written, so that ``apply``, ``--dry-run`` and
+    ``--check`` are the same computation followed by three different endings.
+    """
+
+    path: Path
+    text: str
+    counts: Counts
+    changed: bool
+
+    @property
+    def payload(self) -> bytes:
+        return self.text.encode("utf-8")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Result:
+    """What a whole run would do."""
+
+    plans: tuple[Plan, ...] = ()
+
+    @property
+    def changed(self) -> tuple[Plan, ...]:
+        return tuple(plan for plan in self.plans if plan.changed)
+
+    @property
+    def counts(self) -> Counts:
+        total = Counts()
+        for plan in self.plans:
+            total += plan.counts
+        return total
+
+    @property
+    def clean(self) -> bool:
+        return not self.changed
+
+
+def provenance(segment: Segment) -> str:
+    """The one comment line a machine-written entry carries.
+
+    Five fields on one line so the diff stays readable, and every one of them is
+    load bearing later: ``model`` because a string written by a cut-down model is
+    worth doing again, ``prompt`` and ``glossary`` because both are staleness
+    causes, ``batch`` because a systematic failure has to be traceable back to
+    the call that produced it, and ``run`` because a bad hour has to be findable
+    after the fact.
+
+    Every one of them comes from the segment and none from the run doing the
+    writing. They describe when and how the string was translated, not when it
+    was last copied into a file, and a field that fell back to the applying run
+    would both say something untrue and make ``--check`` report the whole corpus
+    as changed the day after it was written.
+
+    A field the memory does not have is left out rather than guessed at.
+    """
+    if segment.source == "passthrough":
+        return f"{MARKER} passthrough={classify.classify(segment.msgid).value}"
+    fields = [
+        ("model", segment.model),
+        ("prompt", (segment.prompt or "")[:PROMPT_CHARS] or None),
+        ("glossary", segment.glossary),
+        ("batch", segment.batch),
+        ("run", segment.run),
+    ]
+    said = " ".join(f"{key}={value}" for key, value in fields if value is not None)
+    return f"{MARKER} {said}".rstrip()
+
+
+def is_human(entry: Entry) -> bool:
+    """Whether a person has signed off on this entry.
+
+    Translated and not fuzzy. Fuzzy is what everything this tool writes carries,
+    so the absence of it is the reviewer's mark and the only durable record that
+    somebody read the string.
+    """
+    return entry.translated and not entry.fuzzy
+
+
+def apply_entry(upstream: Entry, existing: Entry | None, segment: Segment | None) -> Entry:
+    """One entry: the upstream string, with whatever the memory has to say.
+
+    A human ``msgstr`` already in the file is returned untouched, with the lines
+    it was read from, so a reviewed string produces no diff bytes at all and
+    cannot be silently replaced by a machine one. That is the fixed precedence of
+    spec 01 §3 enforced where it matters, at the moment of writing.
+
+    The spec says ``apply`` refuses to run rather than overwrite a person's work.
+    Refusing the entry is the same guarantee and a workable one: a reviewer
+    unfuzzying a string is the normal case, and refusing the run would leave the
+    pipeline failing until the memory caught up with the catalog. What matters is
+    that no machine string ever lands on top of a human one, and none does.
+
+    Keeping the reviewed entry whole keeps its source reference as it was, which
+    can go stale if upstream moves the string. That is the cheaper way to be
+    wrong. A line reference goes stale only when the string moves without
+    changing, since changing it produces a different segment entirely, and a
+    reviewer who has to look one line further up has lost less than a corpus of
+    reflowed diffs costs everybody.
+    """
+    if existing is not None and is_human(existing):
+        return existing
+    if segment is None or not segment.msgstr:
+        return _untranslated(upstream)
+    if segment.source == "human":
+        return upstream.with_msgstr(segment.msgstr, fuzzy=False)
+    return upstream.with_msgstr(segment.msgstr).with_comments(
+        [*upstream.comments, provenance(segment)]
+    )
+
+
+def _untranslated(upstream: Entry) -> Entry:
+    """Upstream's entry with nothing written onto it.
+
+    Returned as it came when there was nothing there to begin with, because
+    ``with_msgstr`` drops the physical lines and the corpus is mostly entries
+    nobody has translated yet. Rewriting all of them would reflow tens of
+    thousands of fields to say exactly what they already said.
+
+    An upstream entry that does carry a fuzzy translation is blanked. Fuzzy
+    upstream means gettext is not confident the string still matches its source,
+    ``sync`` refuses to take one into the memory as ground truth, and carrying it
+    into this repo would launder it into something that looks like our work.
+    """
+    if not upstream.msgstr and not upstream.fuzzy:
+        return upstream
+    return upstream.with_msgstr("", fuzzy=False)
+
+
+def header(upstream: Catalog, stamp: Stamp) -> Catalog:
+    """The header block this tool owns, over the one upstream shipped.
+
+    Identical across the corpus except for the project and the date, because 548
+    headers that differ in ways nobody chose is 548 diffs nobody can read.
+    """
+    return upstream.with_metadata(
+        **{
+            "Project-Id-Version": stamp.project,
+            "PO-Revision-Date": stamp.revised,
+            "Last-Translator": LAST_TRANSLATOR,
+            "Language-Team": LANGUAGE_TEAM,
+            "Language": LANGUAGE,
+            "MIME-Version": "1.0",
+            "Content-Type": CONTENT_TYPE,
+            "Content-Transfer-Encoding": TRANSFER_ENCODING,
+            "Plural-Forms": PLURAL_FORMS,
+            "X-Generator": stamp.generator,
+        }
+    )
+
+
+def apply_catalog(
+    upstream: Catalog, existing: Catalog | None, memory: Memory, *, stamp: Stamp
+) -> tuple[Catalog, Counts]:
+    """One file: upstream's structure, the memory's translations."""
+    known = existing.by_id() if existing is not None else {}
+    entries: list[Entry] = []
+    written = kept = untranslated = 0
+
+    for entry in upstream:
+        was = known.get(entry.id)
+        applied = apply_entry(entry, was, memory.get(entry.id))
+        entries.append(applied)
+        if was is not None and is_human(was):
+            kept += 1
+        elif applied.translated:
+            written += 1
+        else:
+            untranslated += 1
+
+    counts = Counts(written=written, kept=kept, untranslated=untranslated)
+    return header(upstream, stamp).replace_entries(entries), counts
+
+
+def plan_file(upstream: Catalog, target: Path, memory: Memory, *, stamp: Stamp) -> Plan:
+    """What one file would become, without writing anything."""
+    existing = catalog.read(target) if target.exists() else None
+    applied, counts = apply_catalog(upstream, existing, memory, stamp=stamp)
+    text = catalog.render(applied)
+    changed = not target.exists() or target.read_bytes() != text.encode("utf-8")
+    return Plan(path=target, text=text, counts=counts, changed=changed)
+
+
+def plan(
+    sources: Iterable[Path], memory: Memory, *, root: Path, into: Path, stamp: Stamp
+) -> Result:
+    """What a whole run would do, file by file, in a stable order."""
+    return Result(
+        plans=tuple(
+            plan_file(catalog.read(source), into / source.relative_to(root), memory, stamp=stamp)
+            for source in sources
+        )
+    )
+
+
+def write(result: Result) -> tuple[Path, ...]:
+    """Write the files that changed, atomically, and return which.
+
+    Only the ones that changed. Leaving 548 mtimes alone is what makes ``git
+    status`` after a nine-hour run a report of the run rather than a list of
+    every file in the repo.
+    """
+    written: list[Path] = []
+    for one in result.changed:
+        one.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = one.path.with_name(f".{one.path.name}.pydocvi-tmp")
+        temporary.write_bytes(one.payload)
+        temporary.replace(one.path)
+        written.append(one.path)
+    return tuple(written)
+
+
+def revision_of(path: Path) -> str:
+    """The ``PO-Revision-Date`` already in a file, if it has one.
+
+    ``--check`` needs it. Rendering with today's date would report every file in
+    the corpus as changed every day, which is a check that fails so reliably that
+    it stops being read.
+    """
+    if not path.exists():
+        return ""
+    return catalog.read(path).metadata.get("PO-Revision-Date", "")
+
+
+def check(
+    sources: Sequence[Path], memory: Memory, *, root: Path, into: Path, stamp: Stamp
+) -> Result:
+    """Render every file against what is committed, and report the differences.
+
+    Each file is rendered with the revision date it already carries, so the only
+    thing this can report is a difference in content. A file that is missing gets
+    the stamp's own date and shows up as changed, which it is.
+    """
+    plans: list[Plan] = []
+    for source in sources:
+        target = into / source.relative_to(root)
+        at = revision_of(target)
+        one = plan_file(
+            catalog.read(source),
+            target,
+            memory,
+            stamp=Stamp(
+                project=stamp.project,
+                run=stamp.run,
+                generator=stamp.generator,
+                revision=at or stamp.revision,
+            ),
+        )
+        plans.append(one)
+    return Result(plans=tuple(plans))

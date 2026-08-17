@@ -20,6 +20,7 @@ from pydocvi.catalog import segment_id
 from pydocvi.cli import ExitCode, app, main
 from pydocvi.client import Answer
 from pydocvi.fleet import Ran
+from pydocvi.memory import Memory, Segment
 from pydocvi.queue import Job, Queue, Stage, State
 from pydocvi.routes import Route
 
@@ -987,3 +988,71 @@ class TestPromptShow:
         result = runner.invoke(app, ["prompt", "show"])
         longest = max(result.stdout.splitlines(), key=len)
         assert len(longest) > 100
+
+
+class TestApply:
+    def test_a_run_writes_the_catalogs_into_the_content_repo(
+        self, workspace: Path, content: Path
+    ) -> None:
+        _remember(workspace, "Dealing with Bugs", "Xử lý lỗi")
+        result = runner.invoke(app, ["apply"])
+        assert result.exit_code == ExitCode.OK
+        assert "Xử lý lỗi" in (content / "bugs.po").read_text(encoding="utf-8")
+
+    def test_a_dry_run_writes_nothing(self, workspace: Path, content: Path) -> None:
+        """A tool that has run for nine hours must be safe to point at a repo."""
+        _remember(workspace, "Dealing with Bugs", "Xử lý lỗi")
+        result = runner.invoke(app, ["apply", "--dry-run"])
+        assert result.exit_code == ExitCode.OK
+        assert not (content / "bugs.po").exists()
+
+    def test_check_passes_on_a_tree_the_memory_agrees_with(
+        self, workspace: Path, content: Path
+    ) -> None:
+        _remember(workspace, "Dealing with Bugs", "Xử lý lỗi")
+        runner.invoke(app, ["apply"])
+        assert runner.invoke(app, ["apply", "--check"]).exit_code == ExitCode.OK
+
+    def test_check_fails_and_names_the_file_somebody_edited(
+        self, workspace: Path, content: Path
+    ) -> None:
+        """This is what CI runs. A hand edit on the content repo has to fail the
+        build rather than be reverted by the next run and mentioned in a log."""
+        _remember(workspace, "Dealing with Bugs", "Xử lý lỗi")
+        runner.invoke(app, ["apply"])
+        target = content / "bugs.po"
+        target.write_text(
+            target.read_text(encoding="utf-8").replace("Xử lý lỗi", "Sửa tay"), encoding="utf-8"
+        )
+        result = runner.invoke(app, ["apply", "--check"])
+        assert result.exit_code == ExitCode.CHECK_FAILED
+        assert "bugs.po" in result.stdout
+
+    def test_one_file_can_be_named(self, workspace: Path, content: Path) -> None:
+        _remember(workspace, "Dealing with Bugs", "Xử lý lỗi")
+        result = runner.invoke(app, ["apply", "--file", "bugs.po"])
+        assert result.exit_code == ExitCode.OK
+        assert (content / "bugs.po").exists()
+
+    def test_a_file_upstream_does_not_have_is_a_usage_error(
+        self, workspace: Path, content: Path
+    ) -> None:
+        result = runner.invoke(app, ["apply", "--file", "nope.po"])
+        assert result.exit_code == ExitCode.USAGE
+        assert "no catalog" in result.stdout
+
+    def test_the_branch_names_the_project_in_every_header(
+        self, workspace: Path, content: Path
+    ) -> None:
+        _remember(workspace, "Dealing with Bugs", "Xử lý lỗi")
+        runner.invoke(app, ["apply", "--branch", "3.14"])
+        assert "Project-Id-Version: Python 3.14" in (content / "bugs.po").read_text(
+            encoding="utf-8"
+        )
+
+
+def _remember(workspace: Path, msgid: str, msgstr: str) -> Memory:
+    """A memory holding one machine translation, saved where the CLI looks."""
+    memory = Memory([Segment(id=segment_id(msgid), msgid=msgid, msgstr=msgstr, source="machine")])
+    memory.save(workspace / "work" / "memory.json")
+    return memory
