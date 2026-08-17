@@ -606,17 +606,29 @@ def glossary_curate(
             table.add_row(rule, f"{count:,}")
         console.print(table)
 
+    where.reports.mkdir(parents=True, exist_ok=True)
+    report = where.reports / "glossary-curation.md"
+    report.write_text(curate.report(outcome, prompt=curate.prompt_id()), encoding="utf-8")
+    console.print(f"wrote {report}")
+
+    # The report is written either way, because a run that failed is exactly the
+    # one worth having a record of. The proposal is not, because a run that
+    # accepted nothing has nothing to propose and would only overwrite the last
+    # good one with an empty file. That is not hypothetical: the fleet went down
+    # mid-run and a 873 term proposal became a 165 byte stub.
+    if not outcome.accepted:
+        console.print(
+            f"[red]nothing was accepted, so {where.proposal.name} is left as it was.[/red]"
+        )
+        console.print("check the fleet with [bold]pydocvi doctor[/bold] and run this again")
+        raise typer.Exit(ExitCode.FLEET_UNREACHABLE)
+
     proposed = glossary.Glossary(version=0).with_terms(
         glossary.match_order(outcome.accepted), version=0
     )
     where.proposal.parent.mkdir(parents=True, exist_ok=True)
     glossary.save(proposed, where.proposal)
     console.print(f"wrote {where.proposal}")
-
-    where.reports.mkdir(parents=True, exist_ok=True)
-    report = where.reports / "glossary-curation.md"
-    report.write_text(curate.report(outcome, prompt=curate.prompt_id()), encoding="utf-8")
-    console.print(f"wrote {report}")
 
 
 async def _curate(known: list[routes.Route], made: list[curate.Batch]) -> list[curate.Reply]:

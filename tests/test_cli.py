@@ -539,6 +539,62 @@ class TestGlossaryCurate:
         assert len(completions.prompts) == 2
 
 
+class TestARunThatAcceptedNothing:
+    """The fleet went down part way through a real run and every call failed.
+
+    The proposal was written anyway, so 873 reviewed rows became an empty file
+    and the only copy of that work was gone. A run with nothing in it must not
+    be able to do that.
+    """
+
+    @pytest.fixture
+    def failing(self, monkeypatch: pytest.MonkeyPatch) -> FakeCompletions:
+        def refuse(prompt: str) -> str:
+            raise RuntimeError("connection reset")
+
+        fake = FakeCompletions(refuse)
+        monkeypatch.setattr("pydocvi.cli.Client", lambda: fake)
+        return fake
+
+    def test_the_earlier_proposal_is_left_alone(
+        self, workspace: Path, content: Path, route_file: Path, failing: FakeCompletions
+    ) -> None:
+        runner.invoke(app, ["glossary", "mine", "--minimum", "1", "--limit", "5"])
+        earlier = content / "manifests" / "glossary-proposed.yaml"
+        earlier.parent.mkdir(parents=True, exist_ok=True)
+        earlier.write_text('version: 0\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
+        runner.invoke(app, ["glossary", "curate", "--yes"])
+        assert glossary.load(earlier).terms[0].en == "iterable"
+
+    def test_it_exits_as_an_unreachable_fleet_rather_than_a_success(
+        self, workspace: Path, content: Path, route_file: Path, failing: FakeCompletions
+    ) -> None:
+        runner.invoke(app, ["glossary", "mine", "--minimum", "1", "--limit", "5"])
+        result = runner.invoke(app, ["glossary", "curate", "--yes"])
+        assert result.exit_code == ExitCode.FLEET_UNREACHABLE
+
+    def test_it_says_the_proposal_was_left_as_it_was(
+        self, workspace: Path, content: Path, route_file: Path, failing: FakeCompletions
+    ) -> None:
+        runner.invoke(app, ["glossary", "mine", "--minimum", "1", "--limit", "5"])
+        result = runner.invoke(app, ["glossary", "curate", "--yes"])
+        assert "left as it was" in result.stdout.replace("\n", "")
+
+    def test_the_report_is_still_written_because_a_failure_is_worth_a_record(
+        self, workspace: Path, content: Path, route_file: Path, failing: FakeCompletions
+    ) -> None:
+        runner.invoke(app, ["glossary", "mine", "--minimum", "1", "--limit", "5"])
+        runner.invoke(app, ["glossary", "curate", "--yes"])
+        assert (workspace / "work" / "reports" / "glossary-curation.md").exists()
+
+    def test_no_proposal_is_created_where_there_was_none(
+        self, workspace: Path, content: Path, route_file: Path, failing: FakeCompletions
+    ) -> None:
+        runner.invoke(app, ["glossary", "mine", "--minimum", "1", "--limit", "5"])
+        runner.invoke(app, ["glossary", "curate", "--yes"])
+        assert not (content / "manifests" / "glossary-proposed.yaml").exists()
+
+
 class TestGlossaryCheck:
     def test_a_clean_glossary_passes(self, content: Path) -> None:
         write_glossary(content, 'version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n')
