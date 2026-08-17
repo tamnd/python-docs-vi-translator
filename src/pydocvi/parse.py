@@ -56,11 +56,29 @@ class Answer:
 def parse(text: str, count: int) -> Answer:
     """Split an answer into entries, refusing the parts that do not fit.
 
-    ``count`` is how many entries the batch asked about. Indices outside
-    ``1..count``, repeated indices and missing indices are all problems, each
-    reported against its own index, and each costs only its own entry. Only the
-    alignment of the whole answer, which is spec 06's ``P03``, is a reason to
-    reject everything.
+    ``count`` is how many entries the batch asked about. A missing index is a
+    problem reported against its own index and costs only its own entry. Only
+    the alignment of the whole answer, which is spec 06's ``P03``, is a reason
+    to reject everything.
+
+    A numbered line is a marker only where it continues the sequence, and
+    anything else on a line that looks like one is text. 29 of the 73 413 prose
+    entries in this corpus contain such a line: shell transcripts, dtrace
+    output, and numbered lists inside the prose. Reading one as a marker used to
+    truncate the entry it was inside, silently, keeping the part before it and
+    dropping the rest, and the result passed every invariant that a short
+    translation passes. A half-translated string that nothing complains about is
+    the worst thing this file can produce.
+
+    28 of those 29 now survive whole. The last is a table of Unicode codepoints
+    in ``unicode.po`` whose own lines run 0, 1, 2, 3, 4, which is a numbered
+    sequence no parser working a line at a time can tell from an answer. It
+    fails ``P03``, is retried, dies, and is left in English, which is what the
+    ladder is for.
+
+    Nothing is lost by being strict. An answer whose indices are not exactly
+    ``1..count`` fails ``P03`` and the batch is retried whole, so the only
+    behaviour this changes is the one that was wrong.
     """
     problems: list[Problem] = []
     entries: dict[int, str] = {}
@@ -74,17 +92,19 @@ def parse(text: str, count: int) -> Answer:
     if preamble and not fenced:
         problems.append(Problem(kind="preamble before the first entry", detail=preamble[:80]))
 
-    for position, marker in enumerate(markers):
-        index = int(marker.group(1))
-        end = markers[position + 1].start() if position + 1 < len(markers) else len(text)
-        body = _body(text[marker.end() : end])
+    real, stray = _sequence(markers, count)
+    if stray:
+        problems.append(
+            Problem(
+                kind="numbered line(s) inside an entry, read as text",
+                detail=" ".join(str(n) for n in stray),
+            )
+        )
 
-        if index < 1 or index > count:
-            problems.append(Problem(kind="index out of range", index=index))
-            continue
-        if index in entries:
-            problems.append(Problem(kind="index repeated", index=index))
-            continue
+    for position, marker in enumerate(real):
+        end = real[position + 1].start() if position + 1 < len(real) else len(text)
+        index = int(marker.group(1))
+        body = _body(text[marker.end() : end])
         if not body:
             problems.append(Problem(kind="empty body", index=index))
             continue
@@ -96,6 +116,26 @@ def parse(text: str, count: int) -> Answer:
         if n not in entries
     )
     return Answer(entries=entries, problems=tuple(problems), fenced=fenced)
+
+
+def _sequence(markers: list[re.Match[str]], count: int) -> tuple[list[re.Match[str]], list[int]]:
+    """The markers that continue ``1, 2, 3, ...``, and the numbers of the rest.
+
+    A model that skips an entry loses everything after the gap here, which
+    sounds worse than it is: a gap fails ``P03``, and a batch that fails ``P03``
+    is retried whole however much of it was parsed.
+    """
+    real: list[re.Match[str]] = []
+    stray: list[int] = []
+    expected = 1
+    for marker in markers:
+        index = int(marker.group(1))
+        if index == expected <= count:
+            real.append(marker)
+            expected += 1
+        else:
+            stray.append(index)
+    return real, stray
 
 
 def _body(raw: str) -> str:

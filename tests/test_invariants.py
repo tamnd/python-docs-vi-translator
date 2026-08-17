@@ -103,14 +103,33 @@ class TestP08:
 
 
 class TestP09:
-    def test_a_dropped_format_specifier(self) -> None:
-        assert "P09" in rules("Cannot open %s here.", "Không thể mở tệp ở đây.")
+    """A format specifier is itself a protected span, so this rule runs against
+    the restored translation. Against the answer as it arrives it compared a
+    source holding %s to a translation holding the marker that replaced it, and
+    so refused a perfect translation of every entry carrying one: 617 entries of
+    this corpus, in 391 of its 2 776 batches."""
 
-    def test_a_preserved_specifier(self) -> None:
-        assert "P09" not in rules("Cannot open %s.", "Không thể mở %s.")
+    def test_a_translation_that_kept_the_marker_kept_the_specifier(self) -> None:
+        assert rules("Return %s items from it.", "Trả về ⟦1⟧ mục từ đó.") == set()
 
-    def test_a_brace_specifier_counted_too(self) -> None:
-        assert "P09" in rules("Value {name} here.", "Giá trị {ten} ở đây.")
+    def test_a_brace_specifier_is_a_span_like_any_other(self) -> None:
+        assert rules("Value {name} here.", "Giá trị ⟦1⟧ ở đây.") == set()
+
+    def test_a_specifier_invented_in_the_prose_is_caught(self) -> None:
+        assert "P09" in rules("Open the file.", "Không thể mở %s tệp.")
+
+    def test_a_specifier_inside_link_text_is_caught_when_it_is_dropped(self) -> None:
+        """The one place a specifier reaches the model unprotected. A hyperlink
+        reference is the only span that is part prose, and a specifier sitting in
+        that prose is the model's to copy."""
+        found = rules("See `the %s guide <https://x.example/g>`_ here.", "Xem ⟦1⟧hướng dẫn⟦2⟧.")
+        assert "P09" in found
+
+    def test_an_answer_with_broken_markers_is_not_this_rule_to_report(self) -> None:
+        """It cannot be restored, so the specifiers cannot be counted. P01 and
+        P02 have already said what went wrong, and a third sentence about the
+        same mistake would make the retry advice name three rules for one."""
+        assert rules("Cannot open %s here.", "Không thể mở tệp ở đây.") == {"P01", "P02"}
 
 
 class TestP03:

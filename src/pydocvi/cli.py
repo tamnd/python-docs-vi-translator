@@ -26,6 +26,7 @@ from pydocvi import (
     glossary,
     mine,
     queue,
+    render,
     routes,
     sync,
 )
@@ -48,6 +49,8 @@ queue_app = typer.Typer(help="Inspect and repair the work queue.", no_args_is_he
 app.add_typer(queue_app, name="queue")
 glossary_app = typer.Typer(help="Mine, curate and version the terminology.", no_args_is_help=True)
 app.add_typer(glossary_app, name="glossary")
+prompt_app = typer.Typer(help="Show what goes over the wire.", no_args_is_help=True)
+app.add_typer(prompt_app, name="prompt")
 
 console = Console()
 
@@ -230,6 +233,67 @@ def batch_command(
     for path, count in heaviest:
         files.add_row(path, f"{count:,}", f"{count / measured.batches:.1%}")
     console.print(files)
+
+
+@prompt_app.command("show")
+def prompt_show(
+    which: Annotated[
+        str | None, typer.Argument(help="A batch id, or a file path to take the first batch of.")
+    ] = None,
+    fingerprint: Annotated[
+        bool, typer.Option("--hash", help="Print the prompt hash and nothing else.")
+    ] = False,
+) -> None:
+    """Print exactly what one batch sends, system message and user message.
+
+    This is the command that makes the hash in a provenance comment worth
+    recording. A person who finds a wrong Vietnamese sentence can read the batch
+    id in the comment beside it, run this, and see the same bytes the model saw,
+    without a fleet, a key or a tunnel.
+
+    The hash on its own is the fast path, and it takes no corpus: it is what CI
+    compares against the manifest to catch a prompt edited without a version
+    bump behind it.
+    """
+    if fingerprint:
+        console.print(render.fingerprint())
+        return
+
+    where = config.paths()
+    batches = batch.build(_corpus(where.upstream), root=where.upstream)
+    found = _one_batch(batches, which)
+    prompt = render.render(found, glossary.load(where.glossary))
+
+    console.print(
+        f"[dim]batch {found.id}, {len(found)} entries, prompt {prompt.fingerprint}[/dim]",
+        soft_wrap=True,
+    )
+    _verbatim(prompt.system)
+    console.print("[dim]" + "-" * 60 + "[/dim]")
+    _verbatim(prompt.user)
+
+
+def _verbatim(text: str) -> None:
+    """Print text as it is, with nothing done to it.
+
+    Rich wraps at the terminal width, reads square brackets as markup and
+    highlights anything that looks like a number or a path. All three are wrong
+    here: the point of this command is that what it prints is what was sent, and
+    the first version of it reflowed a long entry into three lines that no
+    ``msgid`` ever had.
+    """
+    console.print(text, markup=False, highlight=False, soft_wrap=True)
+
+
+def _one_batch(batches: list[batch.Batch], which: str | None) -> batch.Batch:
+    """The batch a person named, by id or by file, or the first one there is."""
+    if which is None:
+        return batches[0]
+    for one in batches:
+        if one.id == which or one.path == which:
+            return one
+    console.print(f"[red]no batch {which!r}, and no file by that name[/red]")
+    raise typer.Exit(ExitCode.USAGE)
 
 
 def _corpus(upstream: Path) -> list[Catalog]:

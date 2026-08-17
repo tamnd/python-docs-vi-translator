@@ -28,17 +28,40 @@ class TestPartialCredit:
         seconds a call, partial credit is the game."""
         answer = parse.parse("1 Một.\n2 Hai.\n99 Lạc.\n3 Ba.", 3)
         assert sorted(answer.entries) == [1, 2, 3]
-        assert [p.kind for p in answer.problems] == ["index out of range"]
 
-    def test_a_repeated_index_keeps_the_first(self) -> None:
+    def test_a_number_that_does_not_continue_the_sequence_is_text(self) -> None:
+        """Where a stray number is genuinely stray this puts it in the entry
+        before it, and the invariants then have something to refuse. The
+        alternative was dropping it silently, which is what used to truncate an
+        entry whose own text contains a numbered list."""
+        answer = parse.parse("1 Một.\n2 Hai.\n99 Lạc.\n3 Ba.", 3)
+        assert answer.entries[2] == "Hai.\n99 Lạc."
+        assert any("read as text" in p.kind for p in answer.problems)
+
+    def test_a_repeated_index_does_not_replace_what_it_repeats(self) -> None:
         answer = parse.parse("1 Đầu.\n1 Lặp.\n2 Hai.", 2)
-        assert answer.entries[1] == "Đầu."
-        assert any(p.kind == "index repeated" for p in answer.problems)
+        assert answer.entries[1].startswith("Đầu.")
+        assert answer.entries[2] == "Hai."
 
     def test_a_missing_index_is_reported_against_itself(self) -> None:
         answer = parse.parse("1 Một.\n3 Ba.", 3)
-        assert answer.missing(3) == (2,)
+        assert 2 in answer.missing(3)
         assert any(p.index == 2 for p in answer.problems)
+
+    def test_a_gap_costs_everything_after_it_and_that_is_the_trade(self) -> None:
+        """An answer with a gap in it fails ``P03`` and the batch is retried
+        whole, so nothing that would have been used is lost by being strict
+        here."""
+        answer = parse.parse("1 Một.\n3 Ba.", 3)
+        assert sorted(answer.entries) == [1]
+
+    def test_an_entry_whose_own_text_is_a_numbered_list_survives_whole(self) -> None:
+        """From ``logging-cookbook.po``, which has four such entries. This used
+        to keep the first line and drop the rest, silently, and a half
+        translated string passes every invariant a short one passes."""
+        answer = parse.parse("1 Dòng đầu.\n3. Dòng sau.\n2 Câu hai.", 2)
+        assert answer.entries[1] == "Dòng đầu.\n3. Dòng sau."
+        assert answer.entries[2] == "Câu hai."
 
     def test_an_empty_body_is_refused_for_that_entry_only(self) -> None:
         answer = parse.parse("1 Một.\n2 \n3 Ba.", 3)
@@ -96,3 +119,14 @@ class TestProperties:
     def test_a_body_is_never_invented(self, text: str, count: int) -> None:
         answer = parse.parse(text, count)
         assert all(body.strip() for body in answer.entries.values())
+
+
+class TestTheUnicodeTable:
+    def test_a_body_whose_own_lines_count_upwards_is_the_one_that_cannot_work(self) -> None:
+        """One entry in the corpus is a codepoint table whose lines begin 0, 1,
+        2, 3, 4. That is a numbered sequence, and no parser reading a line at a
+        time can tell it from an answer. It fails ``P03``, is retried, dies, and
+        is left in English, which is what the ladder is for."""
+        answer = parse.parse("1 0 aaa\n1 bbb\n2 ccc", 2)
+        assert answer.entries[2] == "ccc"
+        assert answer.entries[1] != "0 aaa\n1 bbb\n2 ccc"
