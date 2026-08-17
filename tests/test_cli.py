@@ -114,7 +114,7 @@ class TestSync:
     def test_reports_the_counts_and_writes_the_pin(self, workspace: Path) -> None:
         result = runner.invoke(app, ["sync"])
         assert result.exit_code == ExitCode.OK
-        pin = (workspace / "work" / "manifests" / "upstream.yaml").read_text(encoding="utf-8")
+        pin = (workspace / "content" / "manifests" / "upstream.yaml").read_text(encoding="utf-8")
         assert 'branch: "3.15"' in pin
         assert "entries: 4" in pin
         assert (workspace / "work" / "reports" / "sync.md").exists()
@@ -520,6 +520,19 @@ def _answering(results: list[fleet.Liveness]) -> Callable[..., list[fleet.Livene
 
 class TestTranslate:
     """The one command that spends money, and the only one that writes the corpus."""
+
+    @pytest.fixture(autouse=True)
+    def _contract(self, workspace: Path) -> Path:
+        """A glossary to quote in the prompt, in the scratch content repo.
+
+        Written here rather than left to whatever is on the machine. Until the
+        paths were pinned to ``tmp_path`` these tests read the real checkout's
+        glossary, which meant they passed here and nowhere else.
+        """
+        target = workspace / "content" / "manifests" / "glossary.yaml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('version: 1\nterms:\n  - en: "iterable"\n    vi: "khả lặp"\n', "utf-8")
+        return target
 
     def test_a_dry_run_says_what_it_would_cost_and_queues_nothing(
         self, workspace: Path, route_file: Path

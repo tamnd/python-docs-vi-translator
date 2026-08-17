@@ -31,6 +31,24 @@ UPSTREAM = Path.home() / "github" / "tamnd" / "python-docs-vi"
 FAKE_KEY = "sk-" + "not-a-real-key-0123456789"
 
 
+@pytest.fixture(autouse=True)
+def _never_a_real_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point every path at ``tmp_path`` before any test runs.
+
+    Autouse, and belt and braces on top of the fixtures that already do this,
+    because the cost of getting it wrong is asymmetric. A test that forgets to
+    override ``PYDOCVI_CONTENT`` does not fail: it passes, having written a pin
+    or a glossary into a real checkout, and the next person finds it in ``git
+    status`` days later without knowing what put it there.
+    """
+    for name, path in (
+        ("UPSTREAM", tmp_path / "upstream"),
+        ("CONTENT", tmp_path / "content"),
+        ("WORK", tmp_path / "work"),
+    ):
+        monkeypatch.setenv(f"PYDOCVI_{name}", str(path))
+
+
 @pytest.fixture(scope="session")
 def upstream() -> Path:
     """A local checkout of the upstream Transifex mirror."""
