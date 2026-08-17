@@ -118,7 +118,7 @@ class TestSync:
         assert 'branch: "3.15"' in pin
         assert "entries: 4" in pin
         assert (workspace / "work" / "reports" / "sync.md").exists()
-        assert (workspace / "work" / "memory.json").exists()
+        assert (workspace / "content" / "manifests" / "memory.json").exists()
 
     def test_dry_run_writes_nothing(self, workspace: Path) -> None:
         result = runner.invoke(app, ["sync", "--dry-run"])
@@ -1323,7 +1323,7 @@ class TestApply:
 def _remember(workspace: Path, msgid: str, msgstr: str) -> Memory:
     """A memory holding one machine translation, saved where the CLI looks."""
     memory = Memory([Segment(id=segment_id(msgid), msgid=msgid, msgstr=msgstr, source="machine")])
-    memory.save(workspace / "work" / "memory.json")
+    memory.save(workspace / "content" / "manifests" / "memory.json")
     return memory
 
 
