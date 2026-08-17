@@ -80,3 +80,57 @@ class TestReporting:
         assert found is not None
         assert found.where > 0
         assert "offset" in str(found)
+
+
+class TestWhatTheSourceLicenses:
+    """The half of this module that was missing until a real run found it.
+
+    Every case here is a faithful translation that the guard used to refuse. The
+    first one is the string itself: it opened a batch of 28 in
+    ``library/functions.po``, and ``P06`` rejects the whole batch, so one wrong
+    answer here threw away 27 correct translations beside it.
+    """
+
+    def test_a_note_in_the_source_licenses_a_note_in_the_translation(self) -> None:
+        msgid = "Note: Unlike :func:`iter`, :func:`aiter` has no 2-argument variant."
+        msgstr = "Lưu ý: Không giống như ⟦1⟧, ⟦2⟧ không có biến thể 2 đối số."
+        assert not textguard.clean(msgstr)
+        assert textguard.clean(msgstr, msgid)
+
+    def test_the_following_licenses_duoi_day_la(self) -> None:
+        assert textguard.clean("Dưới đây là các tùy chọn.", "The following are the options.")
+
+    def test_hope_licenses_hy_vong(self) -> None:
+        assert textguard.clean("Chúng tôi hy vọng điều này.", "We hope this.")
+
+    def test_sorry_licenses_xin_loi(self) -> None:
+        assert textguard.clean("Xin lỗi, không tìm thấy.", "Sorry, not found.")
+
+    def test_a_source_that_says_nothing_of_the_kind_licenses_nothing(self) -> None:
+        """The licence is the source raising the subject, not the source
+        existing. A string about sorting does not excuse an apology."""
+        assert not textguard.clean("Xin lỗi, chuỗi này khó hiểu.", "Return a sorted list.")
+
+    def test_a_phrase_with_no_licence_fires_however_the_source_reads(self) -> None:
+        """Some phrases are never a translation of anything. The English
+        documentation does not say "as an AI", so nothing can excuse it."""
+        assert not textguard.clean("As an AI, I note this.", "As an AI system would note that.")
+
+    def test_a_fence_is_never_licensed(self) -> None:
+        """A literal block reaches this module as a placeholder, never as three
+        backticks, so a fence in an answer is always the model presenting."""
+        assert not textguard.clean("```\nTrả về danh sách.\n```", "```\nsorted(x)\n```")
+
+    def test_the_leftmost_phrase_is_the_one_reported_not_the_first_listed(self) -> None:
+        found = textguard.find("Trả về danh sách. Xin lỗi. Here is the translation.")
+        assert found is not None
+        assert found.phrase.lower() == "xin lỗi"
+
+    def test_the_contraction_licenses_it_too(self) -> None:
+        """From ``library/functions.po``. "Here's an example" is how the
+        documentation opens a code block, and it was the last human translation
+        in the corpus this guard still refused."""
+        assert textguard.clean(
+            "Dưới đây là ví dụ tính nghịch đảo của ``38`` theo modulo ``97``::",
+            "Here's an example of computing an inverse for ``38`` modulo ``97``::",
+        )
