@@ -15,6 +15,7 @@ phrase, in the right script, that no Vietnamese programmer uses.
 
 import asyncio
 import hashlib
+import logging
 import re
 import unicodedata
 from collections.abc import Callable, Iterable, Sequence
@@ -27,6 +28,8 @@ from pydocvi.glossary import KEEP, Rejection, Term
 from pydocvi.invariants import vietnamese
 from pydocvi.mine import Candidate
 from pydocvi.routes import Route
+
+log = logging.getLogger(__name__)
 
 #: Candidates in one call, the same cap the translation batches use and for the
 #: same reason: past about forty items a numbered list stops being a list the
@@ -161,6 +164,17 @@ class Reply:
     @property
     def answered(self) -> int:
         return len(self.accepted) + len(self.declined)
+
+    @property
+    def unanswered(self) -> bool:
+        """Whether the call produced no answer at all, as against a poor one.
+
+        A batch that comes back like this is worth sending to another host,
+        because nothing about it is the batch's fault. One that came back with
+        rows dropped under a ``G`` rule is not worth moving, because the second
+        host would drop the same rows for the same reason.
+        """
+        return bool(self.dropped) and all(one.rule == "call" for one in self.dropped)
 
     @classmethod
     def failed(cls, batch: Batch, detail: str) -> Self:
@@ -403,10 +417,12 @@ async def ask(
 
     Curation is a hundred-odd calls rather than the tens of thousands a
     translation pass makes, so it dispatches straight from a queue of batches
-    instead of going through the durable work queue. A batch that fails
-    outright is not retried here: it comes back as a reply with every candidate
-    dropped under ``call``, which reads the same in the report as any other
-    failure and leaves those terms to the next run.
+    instead of going through the durable work queue.
+
+    A batch whose route will not answer is offered to the other routes before
+    it is given up on. Only when every route has refused it does it come back
+    as a reply with every candidate dropped under ``call``, which reads the same
+    in the report as any other failure and leaves those terms to the next run.
     """
     if not routes:
         raise ValueError("no routes to curate with")
@@ -417,12 +433,15 @@ async def ask(
     replies: list[Reply] = []
 
     async def consume(route: Route) -> None:
+        # This route first, the rest in rank order behind it, so a batch only
+        # moves after the host that was chosen for it has actually refused it.
+        order = (route, *(other for other in routes if other.name != route.name))
         while True:
             try:
                 batch = pending.get_nowait()
             except asyncio.QueueEmpty:
                 return
-            reply = await _one(client, route, batch)
+            reply = await _one(client, order, batch)
             replies.append(reply)
             if on_reply is not None:
                 on_reply(reply)
@@ -434,7 +453,31 @@ async def ask(
     return sorted(replies, key=lambda reply: reply.index)
 
 
-async def _one(client: Completions, route: Route, batch: Batch) -> Reply:
+async def _one(client: Completions, routes: Sequence[Route], batch: Batch) -> Reply:
+    """One batch, moved to another host when the first will not answer.
+
+    The client's own retries stay on one route on purpose, because a host that
+    is merely loaded does answer when asked again. This is the other failure: a
+    host that has stopped answering at all, where all three attempts land in the
+    same hole. The first full run over the real fleet lost 80 terms that way,
+    two whole batches, while two other hosts sat idle with nothing to do.
+
+    Only ``unanswered`` replies move. A reply that came back with rows dropped
+    under a ``G`` rule is the model's answer and is kept as it is.
+    """
+    reply = Reply.failed(batch, "no route tried")
+    for route in routes:
+        reply = await _call(client, route, batch)
+        if not reply.unanswered:
+            return reply
+        log.warning(
+            "batch unanswered, moving it to another route",
+            extra={"batch": batch.id, "route": route.name},
+        )
+    return reply
+
+
+async def _call(client: Completions, route: Route, batch: Batch) -> Reply:
     """One call, with a failure turned into a reply rather than an exception."""
     try:
         answer = await client.complete(route, prompt(batch))

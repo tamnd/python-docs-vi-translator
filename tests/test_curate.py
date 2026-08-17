@@ -498,3 +498,77 @@ class TestAsking:
         client = Answering()
         asyncio.run(curate.ask(client, self.one_route(), []))
         assert client.calls == []
+
+
+class Refusing:
+    """A client where the named routes will not answer and the rest will."""
+
+    def __init__(self, *refuse: str):
+        self.refuse = set(refuse)
+        self.calls: list[str] = []
+
+    async def complete(self, route, prompt, *, system=None):
+        self.calls.append(route.name)
+        await asyncio.sleep(0)
+        if route.name in self.refuse:
+            raise RuntimeError(f"{route.name}: connection reset")
+        return Answer(text=renderings(prompt), route=route.name, model=route.model, seconds=1.0)
+
+
+class TestMovingABatchToAnotherRoute:
+    """A host that has stopped answering should not cost the batches it holds.
+
+    Found on the first full run over the real fleet rather than here. One host
+    closed the connection on every attempt, the client's three retries all went
+    back to that same host because staying on one route is what it is for, and
+    80 terms were dropped under ``call`` while two working hosts sat idle.
+    """
+
+    def pair(self):
+        return [make_route("a", concurrency=1), make_route("b", concurrency=1)]
+
+    def test_a_batch_its_own_route_refuses_is_answered_by_another(self):
+        client = Refusing("a")
+        made = curate.batches([candidate("iterable")], size=1)
+        replies = asyncio.run(curate.ask(client, self.pair(), made))
+        assert client.calls == ["a", "b"]
+        assert curate.collect(replies).by_rule == {}
+
+    def test_the_terms_survive_the_move(self):
+        client = Refusing("a")
+        made = curate.batches([candidate("iterable")], size=1)
+        replies = asyncio.run(curate.ask(client, self.pair(), made))
+        assert [term.en for term in curate.collect(replies).accepted] == ["iterable"]
+
+    def test_it_is_given_up_on_only_once_every_route_has_refused(self):
+        client = Refusing("a", "b")
+        made = curate.batches([candidate("iterable")], size=1)
+        replies = asyncio.run(curate.ask(client, self.pair(), made))
+        assert client.calls == ["a", "b"]
+        assert curate.collect(replies).by_rule == {"call": 1}
+
+    def test_an_answer_with_a_dropped_row_is_kept_rather_than_moved(self):
+        """The second host would drop the same row for the same reason.
+
+        Moving it would spend another call to arrive at the same answer, and on
+        a fleet where one host takes four minutes a call that is not free.
+        """
+        client = Answering(lambda _: "1. iterable = kha lap")
+        made = curate.batches([candidate("iterable")], size=1)
+        replies = asyncio.run(curate.ask(client, self.pair(), made))
+        assert len(client.calls) == 1
+        assert curate.collect(replies).by_rule == {"G-c": 1}
+
+
+class TestWhetherAReplyWasAnswered:
+    def test_a_failed_call_counts_as_unanswered(self):
+        assert curate.Reply.failed(batch("iterable"), "connection reset").unanswered
+
+    def test_a_row_dropped_by_a_rule_does_not(self):
+        assert not curate.read(batch("iterable"), "1. iterable = kha lap").unanswered
+
+    def test_nor_does_a_clean_reply(self):
+        assert not curate.read(batch("iterable"), "1. iterable = khả lặp").unanswered
+
+    def test_nor_does_a_decline(self):
+        assert not curate.read(batch("iterable"), f"1. iterable = {UNSURE}").unanswered
