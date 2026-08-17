@@ -47,7 +47,30 @@ class Paths:
 
     @property
     def reports(self) -> Path:
+        """Run artefacts: the last bench, the last curation. Never committed."""
         return self.work / "reports"
+
+    @property
+    def published(self) -> Path:
+        """The committed reports, which are the project's public face.
+
+        On the content repo rather than under ``work`` because they are the
+        argument that the corpus is worth reviewing, and because ``A01``,
+        ``A02``, ``A05`` and ``H06`` all check the corpus against what these
+        files claim. A report that lived in a scratch directory would be checked
+        against nothing on anybody else's machine.
+        """
+        return self.content / "reports"
+
+    @property
+    def tallies(self) -> Path:
+        """One file per translation run, holding its refusal counts.
+
+        Under ``work`` because it is run state, and kept per run rather than
+        overwritten because a tier is translated over several sittings and the
+        question the quality report answers is what the tier cost.
+        """
+        return self.work / "tallies"
 
     @property
     def queue(self) -> Path:

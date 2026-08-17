@@ -15,7 +15,18 @@ from typer.testing import CliRunner
 
 import pydocvi
 from conftest import FAKE_KEY, FakeRunner
-from pydocvi import __version__, cli, config, fleet, glossary, mine, render, worker
+from pydocvi import (
+    __version__,
+    cli,
+    config,
+    fleet,
+    glossary,
+    mine,
+    render,
+    report,
+    translate,
+    worker,
+)
 from pydocvi.catalog import segment_id
 from pydocvi.cli import ExitCode, app, main
 from pydocvi.client import Answer
@@ -1389,3 +1400,105 @@ class TestAudit:
         assert runner.invoke(app, ["audit", "--only", "L05"]).exit_code == ExitCode.OK
         soft = runner.invoke(app, ["audit", "--only", "L05", "--fail-soft"])
         assert soft.exit_code == ExitCode.CHECK_FAILED
+
+
+class TestReportCoverage:
+    """``pydocvi report coverage``.
+
+    The command a reader meets first, and the one place a project talks itself
+    into claiming a million translated words.
+    """
+
+    def test_the_report_lands_in_the_content_repo(self, workspace: Path, content: Path) -> None:
+        _remember(workspace, "Dealing with Bugs", "Xử lý lỗi")
+        runner.invoke(app, ["apply"])
+        result = runner.invoke(app, ["report", "coverage", "--no-readme"])
+        assert result.exit_code == ExitCode.OK
+        assert (
+            (content / "reports" / "coverage.md")
+            .read_text(encoding="utf-8")
+            .startswith("# Coverage")
+        )
+
+    def test_an_applied_entry_is_counted_as_machine_and_not_as_translated(
+        self, workspace: Path, content: Path
+    ) -> None:
+        """End to end, because this is the number the whole column split is for:
+        ``apply`` writes the marker and the report has to read it back."""
+        _remember(workspace, "Dealing with Bugs", "Xử lý lỗi")
+        runner.invoke(app, ["apply"])
+        runner.invoke(app, ["report", "coverage", "--no-readme"])
+        written = (content / "reports" / "coverage.md").read_text(encoding="utf-8")
+        assert "**0 entries are translated**" in written
+
+    def test_the_readme_table_is_regenerated_by_default(
+        self, workspace: Path, content: Path
+    ) -> None:
+        (content / "README.md").write_text(
+            f"# Vietnamese\n\n{report.TABLE_OPEN}\n{report.TABLE_CLOSE}\n", encoding="utf-8"
+        )
+        result = runner.invoke(app, ["report", "coverage"])
+        assert result.exit_code == ExitCode.OK
+        assert "| Tier |" in (content / "README.md").read_text(encoding="utf-8")
+
+    def test_no_readme_leaves_the_readme_alone(self, workspace: Path, content: Path) -> None:
+        target = content / "README.md"
+        target.write_text(f"# Vietnamese\n\n{report.TABLE_OPEN}\n{report.TABLE_CLOSE}\n", "utf-8")
+        before = target.read_text(encoding="utf-8")
+        runner.invoke(app, ["report", "coverage", "--no-readme"])
+        assert target.read_text(encoding="utf-8") == before
+
+    def test_a_readme_with_no_fence_is_a_usage_error(self, workspace: Path, content: Path) -> None:
+        """The fix is one line in a Markdown file and the person running this is
+        the person who can make it, so it is a usage error rather than a crash."""
+        (content / "README.md").write_text("# Vietnamese\n", encoding="utf-8")
+        result = runner.invoke(app, ["report", "coverage"])
+        assert result.exit_code == ExitCode.USAGE
+        assert "generated: coverage" in result.stdout
+
+    def test_a_repo_with_no_readme_yet_still_writes_the_report(
+        self, workspace: Path, content: Path
+    ) -> None:
+        result = runner.invoke(app, ["report", "coverage"])
+        assert result.exit_code == ExitCode.OK
+        assert "nothing to regenerate" in result.stdout
+
+    def test_no_content_repo_is_a_usage_error(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PYDOCVI_CONTENT", "/nonexistent/content")
+        assert runner.invoke(app, ["report", "coverage"]).exit_code == ExitCode.USAGE
+
+
+class TestReportQuality:
+    def test_the_report_lands_in_the_content_repo(self, workspace: Path, content: Path) -> None:
+        result = runner.invoke(app, ["report", "quality"])
+        assert result.exit_code == ExitCode.OK
+        assert (
+            (content / "reports" / "quality.md").read_text(encoding="utf-8").startswith("# Quality")
+        )
+
+    def test_no_run_on_record_is_said_out_loud(self, workspace: Path, content: Path) -> None:
+        """Rather than left to a reader who would otherwise read the absent
+        section as a run that refused nothing."""
+        result = runner.invoke(app, ["report", "quality"])
+        assert "no translation run on record" in result.stdout
+
+    def test_the_refusals_come_from_the_run_that_was_saved(
+        self, workspace: Path, content: Path
+    ) -> None:
+        """The one number in the report that the committed corpus cannot
+        produce, so the one that has to survive the run that measured it."""
+        translate.Tally(run="2026-08-15T04:00Z", accepted=90, refused=10, by_rule={"P01": 10}).save(
+            workspace / "work" / "tallies"
+        )
+        runner.invoke(app, ["report", "quality"])
+        written = (content / "reports" / "quality.md").read_text(encoding="utf-8")
+        assert "| `P01` | 10 |" in written
+        assert "Acceptance rate 90.00%" in written
+
+    def test_no_content_repo_is_a_usage_error(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PYDOCVI_CONTENT", "/nonexistent/content")
+        assert runner.invoke(app, ["report", "quality"]).exit_code == ExitCode.USAGE

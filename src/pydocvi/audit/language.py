@@ -35,11 +35,6 @@ PASSTHROUGH = frozenset(
     }
 )
 
-#: The field ``apply`` writes on an entry it copied through rather than
-#: translated, and the only durable record of what the classifier thought at the
-#: time. ``L04`` reads it back.
-PASSTHROUGH_FIELD = "passthrough="
-
 #: Second-person pronouns ``GLOSSARY.md`` rules out. Vietnamese pronouns encode
 #: the age and the relationship between the speakers, and documentation has no
 #: business assuming either about its reader.
@@ -411,9 +406,9 @@ def _recorded_kind(comments: Sequence[str]) -> str | None:
     passthrough can have drifted away from one.
     """
     for comment in comments:
-        if not comment.startswith(apply.MARKER) or PASSTHROUGH_FIELD not in comment:
+        if not comment.startswith(apply.MARKER) or apply.PASSTHROUGH_FIELD not in comment:
             continue
-        said = comment.split(PASSTHROUGH_FIELD, 1)[1].split()
+        said = comment.split(apply.PASSTHROUGH_FIELD, 1)[1].split()
         if said:
             return said[0]
     return None
