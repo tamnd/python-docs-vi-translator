@@ -255,6 +255,12 @@ class TestQualityDead:
     def test_an_empty_dead_letter_queue_is_worth_saying(self, tmp_path: Path) -> None:
         assert "Nothing in the dead letter queue." in report.quality(corpus_of(queue=tmp_path))
 
+    def test_no_queue_at_all_reads_the_same_as_an_empty_one(self, tmp_path: Path) -> None:
+        """This report is committed and CI fails if a byte of it moved, so a
+        section that reads differently depending on whether a scratch directory
+        exists fires the freshness gate on every run. It did exactly that."""
+        assert report.quality(corpus_of(queue=None)) == report.quality(corpus_of(queue=tmp_path))
+
 
 class TestQualityRoutes:
     def test_calls_are_reported_by_route(self) -> None:

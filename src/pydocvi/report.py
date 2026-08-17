@@ -353,10 +353,13 @@ def _dead(corpus: Corpus) -> list[str]:
     truncated: a truncated list would silently fail the check for the entries
     below the cut, which is the opposite of what a cap is for.
     """
-    if corpus.queue is None:
-        return ["## Dead entries", "", "No queue on this checkout."]
-    jobs = _dead_jobs(corpus.queue)
+    jobs = _dead_jobs(corpus.queue) if corpus.queue is not None else []
     if not jobs:
+        # An absent queue and an empty one say the same thing here, and they have
+        # to. This report is committed, and CI regenerates it and fails if a byte
+        # moved, so a section that reads differently depending on whether a
+        # scratch directory happens to exist makes the freshness gate fire on
+        # every run for a reason that has nothing to do with the corpus. It did.
         return ["## Dead entries", "", "Nothing in the dead letter queue."]
     lines = [
         "## Dead entries",

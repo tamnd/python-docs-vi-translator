@@ -77,6 +77,19 @@ class TestH02:
         corpus = corpus_of(root=tmp_path, tracked=(tmp_path / "gone.po",))
         assert findings(hygiene.h02_no_large_files, corpus) == []
 
+    def test_the_memory_is_allowed_to_be_big(self, tmp_path: Path) -> None:
+        """It is every segment the project has and it only grows. This check
+        fired on it the day it was committed, which is the right instinct and
+        the wrong answer."""
+        corpus = tracked(tmp_path, {hygiene.EXPECTED_LARGE: "x" * (hygiene.LARGE + 1)})
+        assert findings(hygiene.h02_no_large_files, corpus) == []
+
+    def test_nothing_else_under_manifests_gets_the_same_pass(self, tmp_path: Path) -> None:
+        """One path, not a pattern, so the exemption cannot spread by being
+        next to something that already has it."""
+        corpus = tracked(tmp_path, {"manifests/glossary.yaml": "x" * (hygiene.LARGE + 1)})
+        assert len(findings(hygiene.h02_no_large_files, corpus)) == 1
+
 
 class TestH03:
     def test_a_key_shaped_string_is_found(self, tmp_path: Path) -> None:

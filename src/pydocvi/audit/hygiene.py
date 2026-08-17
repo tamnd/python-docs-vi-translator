@@ -37,6 +37,17 @@ LARGE = 512 * 1024
 #: in a hurry by whoever is trying to land something else.
 LARGE_CATALOG = 8 * 1024 * 1024
 
+#: The one tracked file that is meant to be big and to keep getting bigger.
+#: Every other large file is something nobody chose; this one is every segment
+#: the project has, and ``apply --check`` is not checkable without it. Named
+#: rather than given a ceiling, because any number here is a number that gets
+#: raised in a hurry by whoever is trying to land a translation run.
+#:
+#: One path, not a pattern, and not the start of an allowlist. It grows with the
+#: corpus and the answer at that point is to shard it by top-level directory,
+#: which is translator issue #41, not to widen this.
+EXPECTED_LARGE = "manifests/memory.json"
+
 #: Directories and files that belong to a working copy rather than to the
 #: project. ``.DS_Store`` is on the list because there is one in the content
 #: repo's ``MACHINE/`` directory today.
@@ -100,7 +111,7 @@ def h02_no_large_files(corpus: Corpus) -> Iterator[Finding]:
     almost always something that was never meant to be committed.
     """
     for path in corpus.tracked:
-        if not path.exists():
+        if not path.exists() or corpus.relative(path) == EXPECTED_LARGE:
             continue
         size = path.stat().st_size
         catalog = path.suffix in {".po", ".pot"}
