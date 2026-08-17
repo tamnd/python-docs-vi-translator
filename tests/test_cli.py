@@ -15,7 +15,7 @@ from typer.testing import CliRunner
 
 import pydocvi
 from conftest import FAKE_KEY, FakeRunner
-from pydocvi import __version__, config, fleet, glossary, mine
+from pydocvi import __version__, config, fleet, glossary, mine, render
 from pydocvi.catalog import segment_id
 from pydocvi.cli import ExitCode, app, main
 from pydocvi.client import Answer
@@ -952,3 +952,38 @@ class TestGlossaryDiff:
         result = runner.invoke(app, ["glossary", "diff", "1", "2"])
         assert result.exit_code == ExitCode.CHECK_FAILED
         assert "v1.yaml" in result.stdout.replace("\n", "")
+
+
+class TestPromptShow:
+    def test_the_hash_prints_on_its_own_and_needs_no_corpus(self) -> None:
+        """The fast path CI uses. A prompt edited without a manifest bump behind
+        it is caught by comparing this against the manifest, and a check that
+        needed a checkout to run would not be run in CI."""
+        result = runner.invoke(app, ["prompt", "show", "--hash"])
+        assert result.exit_code == ExitCode.OK
+        assert result.stdout.strip() == render.fingerprint()
+
+    def test_both_messages_print(self, workspace: Path, content: Path) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "bug"\n    vi: "lỗi"\n')
+        result = runner.invoke(app, ["prompt", "show"])
+        assert result.exit_code == ExitCode.OK
+        assert "You translate the official Python documentation" in result.stdout
+        assert "These strings are from bugs.po" in result.stdout
+
+    def test_a_file_can_be_named_instead_of_a_batch(self, workspace: Path, content: Path) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "bug"\n    vi: "lỗi"\n')
+        assert runner.invoke(app, ["prompt", "show", "bugs.po"]).exit_code == ExitCode.OK
+
+    def test_a_batch_nobody_has_is_a_usage_error(self, workspace: Path, content: Path) -> None:
+        write_glossary(content, 'version: 1\nterms:\n  - en: "bug"\n    vi: "lỗi"\n')
+        result = runner.invoke(app, ["prompt", "show", "nope.po"])
+        assert result.exit_code == ExitCode.USAGE
+        assert "no batch" in result.stdout
+
+    def test_a_long_entry_prints_as_one_line(self, workspace: Path, content: Path) -> None:
+        """Rich wraps at the terminal width, and the whole point of this command
+        is that what it prints is what was sent."""
+        write_glossary(content, 'version: 1\nterms:\n  - en: "bug"\n    vi: "lỗi"\n')
+        result = runner.invoke(app, ["prompt", "show"])
+        longest = max(result.stdout.splitlines(), key=len)
+        assert len(longest) > 100
