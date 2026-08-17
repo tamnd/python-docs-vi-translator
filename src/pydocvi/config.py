@@ -35,7 +35,21 @@ class Paths:
 
     @property
     def memory(self) -> Path:
-        return self.work / "memory.json"
+        """Every segment the project has, and the only thing here nobody can rebuild.
+
+        Committed, which is the one place the rule about not committing what a
+        tool can regenerate does not apply. The human segments are decisions and
+        the machine ones cost calls that a rerun would not reproduce, so a
+        memory living under ``work`` would mean the corpus is reproducible only
+        from a laptop. ``apply --check`` is defined as the committed catalogs
+        being exactly what this file and the upstream produce, and that is not a
+        claim anyone else can check unless the file is here.
+
+        It is written sorted by segment id, one object per line group, so a run
+        that changed forty segments shows as forty hunks rather than as a whole
+        file.
+        """
+        return self.manifests / "memory.json"
 
     @property
     def manifests(self) -> Path:
