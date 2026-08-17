@@ -241,7 +241,12 @@ def _corpus(upstream: Path) -> list[Catalog]:
 
 
 def _routes() -> list[routes.Route]:
-    """The route file, or an exit that names the path it looked at."""
+    """Every route in the file, enabled or not, or an exit naming the path.
+
+    For the two commands whose job is to show or fetch rather than to spend:
+    ``status``, which should show a host that is switched off, and ``trace``,
+    which is how somebody works out why it was switched off.
+    """
     try:
         return routes.load()
     except routes.RouteError as error:
@@ -249,10 +254,27 @@ def _routes() -> list[routes.Route]:
         raise typer.Exit(ExitCode.FLEET_UNREACHABLE) from error
 
 
+def _working_routes() -> list[routes.Route]:
+    """The routes a command may tunnel to, probe, or spend calls on.
+
+    ``enabled`` was honoured by ``Router`` and by nothing the command line
+    reaches, so switching a host off in the route file changed nothing: it was
+    still tunnelled to, still probed, still benched, and ``fleet up`` said it
+    opened a tunnel for every enabled route while opening one for all of them.
+    A host is switched off because somebody found out it does not work, and that
+    finding should not need to be made twice.
+    """
+    known = [route for route in _routes() if route.enabled]
+    if not known:
+        console.print("[red]every route in the file is disabled[/red]")
+        raise typer.Exit(ExitCode.FLEET_UNREACHABLE)
+    return known
+
+
 @fleet_app.command("up")
 def fleet_up() -> None:
     """Open a tunnel for every enabled route."""
-    known = _routes()
+    known = _working_routes()
     manager = fleet.Fleet(known)
     failed = 0
     for route in known:
@@ -271,7 +293,7 @@ def fleet_down() -> None:
     Worth doing when a run finishes. A forgotten tunnel is a bound port that the
     next run's ``ExitOnForwardFailure`` correctly refuses to work around.
     """
-    known = _routes()
+    known = _working_routes()
     manager = fleet.Fleet(known)
     for route in known:
         closed = manager.down(route)
@@ -280,8 +302,14 @@ def fleet_down() -> None:
 
 @fleet_app.command("status")
 def fleet_status() -> None:
-    """What is forwarded where."""
+    """What is forwarded where, including the hosts that are switched off.
+
+    The one fleet command that reports every route in the file rather than the
+    ones a run would use, because a host missing from this table looks like a
+    host missing from the file.
+    """
     known = _routes()
+    switched_off = {route.name for route in known if not route.enabled}
     table = Table(box=None)
     table.add_column("route")
     table.add_column("host")
@@ -289,6 +317,8 @@ def fleet_status() -> None:
     table.add_column("state")
     for tunnel in fleet.Fleet(known).status():
         state = "[green]up[/green]" if tunnel.up else "[red]down[/red]"
+        if tunnel.route in switched_off:
+            state = f"{state} [yellow](disabled)[/yellow]"
         table.add_row(
             tunnel.route,
             tunnel.host,
@@ -301,7 +331,7 @@ def fleet_status() -> None:
 @fleet_app.command("probe")
 def fleet_probe() -> None:
     """Ask every route for its health, through the tunnel and with curl."""
-    known = _routes()
+    known = _working_routes()
     manager = fleet.Fleet(known)
     answering = 0
     for route in known:
@@ -321,7 +351,7 @@ def doctor() -> None:
     runbook's ``set -e`` keys on, which is why it is a top-level command rather
     than a subcommand of ``fleet``.
     """
-    known = _routes()
+    known = _working_routes()
     manager = fleet.Fleet(known)
     diagnosis = fleet.Diagnosis(
         tunnels=[manager.probe(route) for route in known],
@@ -368,7 +398,7 @@ def fleet_bench(
     the two hosts behind it in the list. A sick host should cost its own
     measurement and nobody else's.
     """
-    known = _routes()
+    known = _working_routes()
     if route:
         chosen = [one for one in known if one.name in route]
         if unknown := sorted(set(route) - {one.name for one in known}):
@@ -644,7 +674,7 @@ def glossary_curate(
         console.print("nothing to curate")
         return
 
-    known = _routes()
+    known = _working_routes()
     if not yes:
         typer.confirm(f"{len(made)} calls about {len(found):,} terms, continue?", abort=True)
 

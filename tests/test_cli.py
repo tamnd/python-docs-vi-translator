@@ -187,6 +187,20 @@ class TestBatch:
         assert runner.invoke(app, ["batch"]).exit_code == ExitCode.CHECK_FAILED
 
 
+def _route_entry(name: str, *, port: int = 8103, enabled: bool = True) -> dict[str, object]:
+    """One route with the shape of a real one and none of its addresses."""
+    entry: dict[str, object] = {
+        "name": name,
+        "base_url": f"http://127.0.0.1:{port}/v1",
+        "model": "gpt-5",
+        "host": name,
+        "local_port": port,
+    }
+    if not enabled:
+        entry["enabled"] = False
+    return entry
+
+
 @pytest.fixture
 def route_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A route file with the shape of a real one and none of its addresses.
@@ -195,20 +209,18 @@ def route_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     config directory and is never part of a checkout.
     """
     target = tmp_path / "routes.json"
+    target.write_text(json.dumps({"routes": [_route_entry("a")]}), encoding="utf-8")
+    monkeypatch.setenv("PYDOCVI_ROUTES", str(target))
+    monkeypatch.setenv("CHATGPT_PROXY_KEY", FAKE_KEY)
+    return target
+
+
+@pytest.fixture
+def two_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """One route that works and one somebody switched off."""
+    target = tmp_path / "routes.json"
     target.write_text(
-        json.dumps(
-            {
-                "routes": [
-                    {
-                        "name": "a",
-                        "base_url": "http://127.0.0.1:8103/v1",
-                        "model": "gpt-5",
-                        "host": "a",
-                        "local_port": 8103,
-                    }
-                ]
-            }
-        ),
+        json.dumps({"routes": [_route_entry("a"), _route_entry("b", port=8104, enabled=False)]}),
         encoding="utf-8",
     )
     monkeypatch.setenv("PYDOCVI_ROUTES", str(target))
@@ -254,6 +266,75 @@ class TestFleetCommands:
     ) -> None:
         commands.answers = {"curl": Ran(code=0, out="000")}
         assert runner.invoke(app, ["fleet", "probe"]).exit_code == ExitCode.FLEET_UNREACHABLE
+
+    def test_a_disabled_route_is_not_tunnelled_to(
+        self, two_routes: Path, commands: FakeRunner
+    ) -> None:
+        """``enabled`` was honoured by ``Router`` and by nothing the command line
+        reaches, so switching a broken host off in the file changed nothing."""
+        commands.answers = {"lsof": Ran(code=1)}
+        result = runner.invoke(app, ["fleet", "up"])
+        assert result.exit_code == ExitCode.OK
+        assert "a:" in result.stdout
+        assert "b:" not in result.stdout
+
+    def test_a_disabled_route_is_not_benched(
+        self, two_routes: Path, commands: FakeRunner, workspace: Path
+    ) -> None:
+        """A host is switched off because somebody found out it does not work.
+        Six calls at a 1 200 second timeout is how long finding that out took."""
+        spent: list[str] = []
+
+        async def _stub(
+            known: list[Route],
+            *,
+            calls: int,
+            prompt: str,
+            say: Callable[[fleet.Bench], None] = lambda _: None,
+        ) -> list[fleet.Bench]:
+            spent.extend(one.name for one in known)
+            return [
+                fleet.Bench(
+                    route=one.name,
+                    calls=1,
+                    failures=0,
+                    empty=0,
+                    seconds=60.0,
+                    concurrency=1,
+                    latency=60.0,
+                )
+                for one in known
+            ]
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr("pydocvi.cli._bench", _stub)
+        try:
+            result = runner.invoke(app, ["fleet", "bench", "--calls", "1", "--yes"])
+        finally:
+            monkeypatch.undo()
+        assert result.exit_code == ExitCode.OK
+        assert spent == ["a"]
+
+    def test_status_shows_a_route_that_is_switched_off(
+        self, two_routes: Path, commands: FakeRunner
+    ) -> None:
+        """The one fleet command that reports every route in the file, because a
+        host missing from this table looks like a host missing from the file."""
+        commands.answers = {"lsof": Ran(code=1)}
+        result = runner.invoke(app, ["fleet", "status"])
+        assert result.exit_code == ExitCode.OK
+        assert "disabled" in result.stdout
+
+    def test_a_file_with_every_route_switched_off(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, commands: FakeRunner
+    ) -> None:
+        target = tmp_path / "routes.json"
+        target.write_text(json.dumps({"routes": [_route_entry("a", enabled=False)]}), "utf-8")
+        monkeypatch.setenv("PYDOCVI_ROUTES", str(target))
+        monkeypatch.setenv("CHATGPT_PROXY_KEY", FAKE_KEY)
+        result = runner.invoke(app, ["fleet", "probe"])
+        assert result.exit_code == ExitCode.FLEET_UNREACHABLE
+        assert "every route in the file is disabled" in result.stdout
 
     def test_a_missing_route_file_names_the_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Named because the commonest cause is looking in the wrong place, and
