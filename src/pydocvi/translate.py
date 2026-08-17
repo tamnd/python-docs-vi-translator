@@ -467,16 +467,30 @@ class Run:
     def _ladder(
         self, job: Job, batch: Batch, failed: Sequence[Item], *, note: str, attempt: Attempt
     ) -> None:
-        """Queue the next rung, or bury what has run out of rungs."""
+        """Queue the next rung, or bury what has run out of rungs.
+
+        A rung the queue already holds is a rung that was already climbed. Job
+        ids are content-addressed on the file, the entries, the rung and the
+        advice, so a second run over a tier rebuilds the same ladder and
+        :meth:`Queue.add` refuses every step of it as already known, which is
+        exactly the property that makes a second pass cheap. It also meant a
+        second run climbed no rungs and buried nothing: the second tier 1 run
+        made three calls, reported ``0 entries out of rungs``, and left two
+        entries with no translation and no record of why.
+
+        So a rung nothing could be queued for is a rung that is spent, and the
+        entries on it are buried here rather than dropped.
+        """
         if not failed:
             return
         nxt = Attempt(attempt + 1)
         following = retry(batch, failed, attempt=nxt)
-        if not following:
-            self.tally.dead += len(failed)
-            self.queue.bury(job, error=f"{len(failed)} entries refused after {int(attempt)} rungs")
+        queued = self.queue.extend([self._job(one, attempt=nxt, advice=note) for one in following])
+        if queued:
             return
-        self.queue.extend([self._job(one, attempt=nxt, advice=note) for one in following])
+        self.tally.dead += len(failed)
+        spent = "out of rungs" if not following else f"rung {int(nxt)} already climbed"
+        self.queue.bury(job, error=f"{len(failed)} entries refused, {spent}")
 
     def _job(self, batch: Batch, *, attempt: Attempt, advice: str = "") -> Job:
         payload: dict[str, object] = {

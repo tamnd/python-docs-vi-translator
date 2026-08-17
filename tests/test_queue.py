@@ -416,3 +416,30 @@ class TestBurying:
         one.bury(make_job(), error="out of rungs")
         assert one.retry() == 1
         assert one.count(State.PENDING) == 1
+
+    def test_finishing_a_buried_job_does_not_bring_it_back(self, tmp_path: Path) -> None:
+        """The order these arrive in is the worker's, not a choice.
+
+        It hands the answer to the stage, the stage buries the job because the
+        entries in it have run out of rungs, and then the worker finishes the
+        job because the call did come back. The first tier 1 run ended
+        ``dead 0`` while reporting 28 entries out of rungs, and every one of
+        those jobs had been unlinked by this line.
+        """
+        one = Queue(tmp_path, Stage.TRANSLATE)
+        one.add(make_job())
+        claimed = one.claim(now=0.0)
+        assert claimed is not None
+        one.bury(claimed, error="3 entries refused after 3 rungs")
+        one.finish(claimed)
+        assert one.count(State.DEAD) == 1
+        assert one.count(State.DONE) == 0
+
+    def test_finishing_an_ordinary_job_still_works(self, tmp_path: Path) -> None:
+        one = Queue(tmp_path, Stage.TRANSLATE)
+        one.add(make_job())
+        claimed = one.claim(now=0.0)
+        assert claimed is not None
+        one.finish(claimed)
+        assert one.count(State.DONE) == 1
+        assert one.count(State.DEAD) == 0

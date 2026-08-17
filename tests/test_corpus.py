@@ -26,15 +26,21 @@ EXPECTED_WORDS = 1_711_382
 EXPECTED_CHARACTERS = 12_526_506
 EXPECTED_HUMAN = 1_435
 
+#: Re-measured after the code rules landed. 917 entries moved out of prose and
+#: none moved into it, which is what these numbers are here to make visible: the
+#: classifier decides what a run costs and what it never looks at, and both are
+#: silent from any other angle. The 20 that left ``noop`` and the 4 that left
+#: ``version_marker`` were already passthrough and only changed which rule
+#: explains them.
 EXPECTED_KINDS = {
-    "prose": 73_413,
-    "noop": 5_712,
-    "doctest": 2_120,
-    "literal_block": 1_916,
-    "version_marker": 3_847,
+    "prose": 72_496,
+    "noop": 5_692,
+    "doctest": 2_121,
+    "literal_block": 2_856,
+    "version_marker": 3_843,
 }
-EXPECTED_BATCHES = 2_776
-EXPECTED_CHANGELOG_BATCHES = 577
+EXPECTED_BATCHES = 2_759
+EXPECTED_CHANGELOG_BATCHES = 576
 EXPECTED_OVERSIZED = 6
 EXPECTED_LARGEST_ENTRY = 12_707
 
