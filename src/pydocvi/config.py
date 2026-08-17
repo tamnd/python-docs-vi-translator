@@ -39,10 +39,24 @@ class Paths:
 
     @property
     def manifests(self) -> Path:
-        return self.work / "manifests"
+        """The committed manifests: the pin, the glossary, its history.
+
+        On the content repo, all of it. What lives here is either reviewed or
+        quoted, and the one spelling is so that a file cannot be written to one
+        directory and read from another.
+        """
+        return self.content / "manifests"
 
     @property
     def upstream_pin(self) -> Path:
+        """The commit every count in the project is quoted against.
+
+        Committed rather than kept under ``work`` because ``S01`` recounts the
+        corpus against it and ``S02`` needs the pinned upstream to say whether a
+        ``msgid`` was edited. CI has no ``work`` directory and never will, so a
+        pin that lived there would mean the two checks that matter most are the
+        two that only ever run on the machine that already knows the answer.
+        """
         return self.manifests / "upstream.yaml"
 
     @property
@@ -84,11 +98,11 @@ class Paths:
         committed and cited in every prompt. Run state is disposable and this is
         not.
         """
-        return self.content / "manifests" / "glossary.yaml"
+        return self.manifests / "glossary.yaml"
 
     @property
     def candidates(self) -> Path:
-        return self.content / "manifests" / "glossary-candidates.yaml"
+        return self.manifests / "glossary-candidates.yaml"
 
     @property
     def proposal(self) -> Path:
@@ -98,12 +112,12 @@ class Paths:
         human pass happens here and neither overwriting the mining output nor
         writing unreviewed rows into the contract is acceptable.
         """
-        return self.content / "manifests" / "glossary-proposed.yaml"
+        return self.manifests / "glossary-proposed.yaml"
 
     @property
     def versions(self) -> Path:
         """One file per past version, so ``glossary diff 6 7`` has two sides."""
-        return self.content / "manifests" / "glossary"
+        return self.manifests / "glossary"
 
     @property
     def glossary_markdown(self) -> Path:
