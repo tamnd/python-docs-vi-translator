@@ -165,8 +165,11 @@ class TestFrequencySource:
         assert mine.from_frequency(["a context manager here"] * 3, minimum=8) == []
 
     def test_a_phrase_starting_with_a_stopword_is_not_proposed(self):
-        found = {candidate.en for candidate in mine.from_frequency(["the module"] * 10, minimum=8)}
-        assert "the module" not in found and "module" in found
+        found = {
+            candidate.en
+            for candidate in mine.from_frequency(["the module registry"] * 10, minimum=8)
+        }
+        assert "the module" not in found and "module registry" in found
 
     def test_a_phrase_ending_with_a_stopword_is_not_proposed(self):
         found = {candidate.en for candidate in mine.from_frequency(["module of"] * 10, minimum=8)}
@@ -183,12 +186,6 @@ class TestFrequencySource:
         }
         assert "patch by victor" not in found
 
-    def test_the_words_either_side_of_it_are_still_proposed(self):
-        found = {
-            candidate.en for candidate in mine.from_frequency(["patch by victor"] * 10, minimum=8)
-        }
-        assert {"patch", "victor"} <= found
-
     def test_an_adverb_is_not_a_term(self):
         """``now`` was the highest-count candidate on the corpus at 6,601.
 
@@ -196,21 +193,10 @@ class TestFrequencySource:
         and English outranks terminology on raw count.
         """
         found = {
-            candidate.en for candidate in mine.from_frequency(["module now works"] * 10, minimum=8)
-        }
-        assert "now" not in found
-
-    def test_a_word_that_is_prose_and_a_python_term_is_still_proposed(self):
-        """``set``, ``type`` and ``list`` are common English and real terms.
-
-        They are the reason the stopword list is closed-class. A list that went
-        after common words instead of function words would take these with it.
-        """
-        found = {
             candidate.en
-            for candidate in mine.from_frequency(["set type list class value"] * 10, minimum=8)
+            for candidate in mine.from_frequency(["module now loads fast"] * 10, minimum=8)
         }
-        assert {"set", "type", "list", "class", "value"} <= found
+        assert not any("now" in phrase.split() for phrase in found)
 
     def test_a_phrase_never_crosses_a_comma(self):
         found = {
@@ -244,7 +230,7 @@ class TestFrequencySource:
     def test_the_most_frequent_phrase_comes_first(self):
         corpus = ["common word"] * 20 + ["rare word"] * 8
         found = mine.from_frequency(corpus, minimum=8)
-        assert found[0].en == "word"
+        assert found[0].en == "common word"
 
     def test_an_identifier_is_not_counted_as_a_word(self):
         found = {
@@ -253,13 +239,50 @@ class TestFrequencySource:
         assert "foo_bar" not in found
 
     def test_a_hyphenated_word_is_one_word(self):
+        """Split on the hyphen this would read "built in function" instead."""
         found = {
-            candidate.en for candidate in mine.from_frequency(["a built-in thing"] * 10, minimum=8)
+            candidate.en
+            for candidate in mine.from_frequency(["a built-in function"] * 10, minimum=8)
         }
-        assert "built-in" in found
+        assert "built-in function" in found
 
     def test_an_empty_corpus_proposes_nothing(self):
         assert mine.from_frequency([]) == []
+
+
+class TestSingleWordsAreLeftToTheCuratedSources:
+    """Counting one word over a documentation corpus measures English.
+
+    65% of the single-word candidates the corpus produced were ordinary
+    dictionary words, and no stopword list fixes that, because the list would
+    have to be all of English. A glossary row is held to by ``G02`` across every
+    entry, so a wrong row fails translations that are correct while a missing
+    one only leaves a term unenforced. Those costs are not symmetric.
+    """
+
+    def test_a_single_word_is_not_proposed_however_often_it_appears(self):
+        assert mine.from_frequency(["module"] * 500, minimum=8) == []
+
+    def test_a_two_word_phrase_still_is(self):
+        found = {
+            candidate.en for candidate in mine.from_frequency(["context manager"] * 10, minimum=8)
+        }
+        assert "context manager" in found
+
+    def test_the_words_inside_a_kept_phrase_are_not_proposed_on_their_own(self):
+        found = {
+            candidate.en for candidate in mine.from_frequency(["context manager"] * 10, minimum=8)
+        }
+        assert "context" not in found and "manager" not in found
+
+    def test_a_single_word_a_person_vouched_for_is_unaffected(self):
+        """The rule is about this source, not about single words as such."""
+        found = mine.from_human(memory(("iterable", "khả lặp", "human")))
+        assert [candidate.en for candidate in found] == ["iterable"]
+
+    def test_and_neither_is_one_from_the_term_page(self):
+        page = catalog(("iterable", ""), ("An object capable of returning members. Yes.", ""))
+        assert [candidate.en for candidate in mine.from_term_page(page)] == ["iterable"]
 
 
 class TestMachineSource:
@@ -520,9 +543,10 @@ class TestContractions:
 
     def test_the_words_around_a_contraction_still_count(self):
         found = {
-            one.en for one in mine.from_frequency(["it doesn't break parsing"] * 10, minimum=8)
+            one.en
+            for one in mine.from_frequency(["it doesn't break module parsing"] * 10, minimum=8)
         }
-        assert "parsing" in found
+        assert "module parsing" in found
 
     def test_a_plain_phrase_is_untouched(self):
         found = {one.en for one in mine.from_frequency(["the context manager"] * 10, minimum=8)}

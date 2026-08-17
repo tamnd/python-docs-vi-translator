@@ -31,6 +31,11 @@ FREQUENCY_LIMIT = 800
 #: repeated phrase is a sentence fragment rather than a term.
 MAX_WORDS = 3
 
+#: The shortest. Counting single words over a documentation corpus measures how
+#: common a word is in English, not whether it is a term, so a single word has
+#: to come from a source a person curated instead. See ``from_frequency``.
+MIN_WORDS = 2
+
 #: How many times a phrase has to appear before it is worth asking about.
 MIN_COUNT = 8
 
@@ -273,7 +278,7 @@ def from_frequency(
     out, so counting over the stripped text is the same operation the prompt
     builder does and needs no second definition of what a span is.
 
-    Phrases are one to three words with no stopword anywhere in them. That is
+    Phrases are two or three words with no stopword anywhere in them. That is
     not a noun-phrase grammar and does not claim to be. It is the cheapest
     filter that keeps "context manager" and drops "of the".
 
@@ -281,6 +286,23 @@ def from_frequency(
     ends only lets a stopword sit in the middle, and the middle is where the
     changelog puts it: "patch by victor", "contributed by serhiy" and "see for
     more" were all candidates on the first real run.
+
+    Two words rather than one, which is the harder rule and the one that costs
+    something. Measured over the corpus, 65% of the single-word candidates this
+    produced were ordinary English dictionary words, and the highest-count
+    candidate in the whole run was "now" at 6,601. No stopword list fixes that,
+    because the list would have to be all of English.
+
+    A glossary row is not a suggestion. It is quoted in every prompt and held to
+    by ``G02`` across all 87,008 entries, so a wrong row fails translations that
+    are correct, while a missing row only leaves a term unenforced. Those costs
+    are not symmetric, and this rule buys precision with recall accordingly.
+
+    It does lose real single-word terms: "encoding", "timeout", "traceback",
+    "whitespace", "newline", "float". They come back by hand in review, which is
+    a much smaller job than striking 482 prose rows. Single words that a person
+    has already vouched for are unaffected, because they arrive from the human
+    translations and from ``glossary.po`` rather than from here.
 
     A phrase carrying an apostrophe is dropped rather than asked about. Every
     one of them is a contraction or a possessive, and asking a model to render
@@ -294,7 +316,10 @@ def from_frequency(
         (
             (phrase, count)
             for phrase, count in counts.items()
-            if count >= minimum and substantial(phrase) and not _APOSTROPHE.search(phrase)
+            if count >= minimum
+            and len(phrase.split()) >= MIN_WORDS
+            and substantial(phrase)
+            and not _APOSTROPHE.search(phrase)
         ),
         key=lambda pair: (-pair[1], pair[0]),
     )
