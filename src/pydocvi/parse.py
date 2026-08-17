@@ -62,18 +62,29 @@ def parse(text: str, count: int) -> Answer:
     to reject everything.
 
     A numbered line is a marker only where it continues the sequence, and
-    anything else on a line that looks like one is text. 29 of the 73 413 prose
-    entries in this corpus contain such a line: shell transcripts, dtrace
-    output, and numbered lists inside the prose. Reading one as a marker used to
-    truncate the entry it was inside, silently, keeping the part before it and
-    dropping the rest, and the result passed every invariant that a short
-    translation passes. A half-translated string that nothing complains about is
-    the worst thing this file can produce.
+    anything else on a line that looks like one is text. 16 of the 73 413 prose
+    entries in this corpus contain such a line, spread over 12 of the 2 776
+    batches: shell transcripts, dtrace output, timeit results and numbered lists
+    inside the prose. Reading one as a marker used to truncate the entry it was
+    inside, silently, keeping the part before it and dropping the rest, and the
+    result passed every invariant that a short translation passes. A
+    half-translated string that nothing complains about is the worst thing this
+    file can produce.
 
-    28 of those 29 now survive whole. The last is a table of Unicode codepoints
-    in ``unicode.po`` whose own lines run 0, 1, 2, 3, 4, which is a numbered
-    sequence no parser working a line at a time can tell from an answer. It
-    fails ``P03``, is retried, dies, and is left in English, which is what the
+    That was 7 of the 16. The stray index was one the answer had already used,
+    so it was skipped, the indices stayed ``1..count`` and ``P03`` never fired.
+    The other 9 carried an index outside the range and were at least reported.
+    All 16 survive whole now.
+
+    One shape still cannot work and never will: a body whose own lines count
+    upwards through the index this parser is next expecting. A table of Unicode
+    codepoints in ``unicode.po`` has lines beginning 0, 1, 2, 3, 4, which no
+    parser reading a line at a time can tell from an answer. It survives only
+    because it sits at entry 7 of its batch, so the number it would have to
+    collide with is 8 and its own numbers stop at 4. Batching is
+    content-addressed and stable, so that is a fact about this corpus rather
+    than a property of the parser. Where such a body does collide, the entry
+    fails ``P03``, is retried, dies and is left in English, which is what the
     ladder is for.
 
     Nothing is lost by being strict. An answer whose indices are not exactly
