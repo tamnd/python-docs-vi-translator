@@ -15,7 +15,7 @@ from typer.testing import CliRunner
 
 import pydocvi
 from conftest import FAKE_KEY, FakeRunner
-from pydocvi import __version__, config, fleet, glossary, mine, render
+from pydocvi import __version__, cli, config, fleet, glossary, mine, render
 from pydocvi.catalog import segment_id
 from pydocvi.cli import ExitCode, app, main
 from pydocvi.client import Answer
@@ -473,18 +473,84 @@ def _returning(results: list[fleet.Bench]) -> Callable[..., list[fleet.Bench]]:
     return _stub
 
 
+def _answering(results: list[fleet.Liveness]) -> Callable[..., list[fleet.Liveness]]:
+    """A stand-in for ``_alive`` that spends no calls and answers what it is given."""
+
+    async def _stub(
+        known: object,
+        *,
+        say: Callable[[fleet.Liveness], None] = lambda _: None,
+    ) -> list[fleet.Liveness]:
+        for result in results:
+            say(result)
+        return results
+
+    return _stub
+
+
 class TestDoctor:
-    def test_a_fleet_that_is_answering_is_exit_zero(
-        self, route_file: Path, commands: FakeRunner
+    def test_a_fleet_that_completes_a_call_is_exit_zero(
+        self, route_file: Path, commands: FakeRunner, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         commands.answers = {"curl": Ran(code=0, out="200")}
+        monkeypatch.setattr(
+            cli, "_alive", _answering([fleet.Liveness(route="server3", up=True, seconds=31.0)])
+        )
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == ExitCode.OK
-        assert "1 of 1 routes answering" in result.stdout
+        assert "1 of 1 routes completing calls" in result.stdout
+
+    def test_a_healthy_route_that_completes_nothing_is_exit_three(
+        self, route_file: Path, commands: FakeRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Health said 200 all afternoon while nothing ever finished. Saying a
+        run can start when it cannot is the one thing this command must not do."""
+        commands.answers = {"curl": Ran(code=0, out="200")}
+        monkeypatch.setattr(
+            cli,
+            "_alive",
+            _answering([fleet.Liveness(route="server3", up=False, detail="nothing within 120s")]),
+        )
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == ExitCode.FLEET_UNREACHABLE
+        assert "none of them completes a call" in result.stdout
+
+    def test_a_substituted_model_is_said_out_loud(
+        self, route_file: Path, commands: FakeRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """It is not a failure and the exit code stays 0. It is here because
+        every provenance comment a run writes names a model."""
+        commands.answers = {"curl": Ran(code=0, out="200")}
+        monkeypatch.setattr(
+            cli,
+            "_alive",
+            _answering(
+                [
+                    fleet.Liveness(
+                        route="server3", up=True, seconds=31.0, asked="gpt-5", served="gpt-5-6-mini"
+                    )
+                ]
+            ),
+        )
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == ExitCode.OK
+        assert "was asked for gpt-5 and served gpt-5-6-mini" in result.stdout
+
+    def test_quick_asks_health_and_spends_nothing(
+        self, route_file: Path, commands: FakeRunner
+    ) -> None:
+        """No stub for the client here on purpose: if --quick made a call, this
+        test would reach the network and fail."""
+        commands.answers = {"curl": Ran(code=0, out="200")}
+        result = runner.invoke(app, ["doctor", "--quick"])
+        assert result.exit_code == ExitCode.OK
+        assert "1 of 1 routes answering health" in result.stdout
 
     def test_a_fleet_that_is_down_is_exit_three(
         self, route_file: Path, commands: FakeRunner
     ) -> None:
+        """No completion is attempted, which is why this needs no stub either.
+        A tunnel that is down cannot answer one and asking costs two minutes."""
         commands.answers = {"curl": Ran(code=7, err="Failed to connect")}
         assert runner.invoke(app, ["doctor"]).exit_code == ExitCode.FLEET_UNREACHABLE
 
@@ -492,7 +558,8 @@ class TestDoctor:
         self, route_file: Path, commands: FakeRunner, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The commonest way a run fails to start, and the one that used to look
-        like a model problem."""
+        like a model problem. No call is spent, because a call with no key is a
+        401 that says nothing about whether the host is alive."""
         monkeypatch.delenv("CHATGPT_PROXY_KEY")
         commands.answers = {"curl": Ran(code=0, out="200")}
         result = runner.invoke(app, ["doctor"])

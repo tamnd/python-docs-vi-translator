@@ -9,6 +9,7 @@ command runner and a fake completions client cover every path that would
 otherwise need a live tunnel.
 """
 
+import asyncio
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -95,13 +96,19 @@ class FakeClient:
         answers: Sequence[str | BaseException] | Callable[[str], str | BaseException] = (),
         *,
         seconds: float = 120.0,
+        served: str = "",
+        delay: float = 0.0,
     ) -> None:
         self.answers = answers
         self.seconds = seconds
+        self.served = served
+        self.delay = delay
         self.calls: list[tuple[str, str]] = []
 
     async def complete(self, route: Route, prompt: str, *, system: str | None = None) -> Answer:
         self.calls.append((route.name, prompt))
+        if self.delay:
+            await asyncio.sleep(self.delay)
         if callable(self.answers):
             reply = self.answers(prompt)
         elif self.answers:
@@ -116,6 +123,7 @@ class FakeClient:
             model=route.model,
             seconds=self.seconds,
             usage=Usage(prompt_tokens=100, completion_tokens=50),
+            served=self.served,
         )
 
 

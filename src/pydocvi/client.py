@@ -89,6 +89,16 @@ class Answer:
     usage: Usage = field(default_factory=Usage)
     attempts: int = 1
 
+    #: What the host said answered, when it said anything. Kept apart from
+    #: ``model``, which is only ever what the route file asked for, because on
+    #: this fleet the two differ on every call and the difference is the point.
+    served: str = ""
+
+    @property
+    def answered_by(self) -> str:
+        """The model to record. What answered, or what was asked for."""
+        return self.served or self.model
+
     @property
     def empty(self) -> bool:
         return not self.text.strip()
@@ -181,7 +191,7 @@ class Client:
         for attempt in range(1, self._retries + 2):
             try:
                 async with asyncio.timeout(route.timeout):
-                    text, usage = await self._stream(route, _messages(prompt, system))
+                    text, usage, served = await self._stream(route, _messages(prompt, system))
             except TimeoutError:
                 last = f"no answer within {route.timeout:.0f}s"
             except httpx.HTTPStatusError as error:
@@ -199,6 +209,7 @@ class Client:
                     seconds=self._clock.now() - started,
                     usage=usage,
                     attempts=attempt,
+                    served=served,
                 )
 
             retrying = attempt <= self._retries
@@ -227,7 +238,7 @@ class Client:
             return False
         return response.status_code == httpx.codes.OK
 
-    async def _stream(self, route: Route, messages: list[dict[str, str]]) -> tuple[str, Usage]:
+    async def _stream(self, route: Route, messages: list[dict[str, str]]) -> tuple[str, Usage, str]:
         client = self._require()
         body = {
             "model": route.model,
@@ -237,6 +248,7 @@ class Client:
         }
         chunks: list[str] = []
         usage = Usage()
+        served = ""
         async with client.stream(
             "POST",
             f"{route.base_url.rstrip('/')}/chat/completions",
@@ -244,11 +256,13 @@ class Client:
             headers=_headers(route),
         ) as response:
             response.raise_for_status()
-            async for piece, reported in _events(response):
-                chunks.append(piece)
-                if reported is not None:
-                    usage = reported
-        return "".join(chunks), usage
+            async for event in _events(response):
+                chunks.append(event.content)
+                if event.usage is not None:
+                    usage = event.usage
+                if event.model and not served:
+                    served = event.model
+        return "".join(chunks), usage, served
 
     def _backoff(self, attempt: int) -> float:
         """Doubling, jittered.
@@ -265,8 +279,17 @@ class Client:
         return self._client
 
 
-async def _events(response: httpx.Response) -> AsyncIterator[tuple[str, Usage | None]]:
-    """Content and usage out of a server-sent event stream.
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Event:
+    """One thing a stream chunk had to say."""
+
+    content: str = ""
+    usage: Usage | None = None
+    model: str = ""
+
+
+async def _events(response: httpx.Response) -> AsyncIterator[_Event]:
+    """Content, usage and the serving model out of a server-sent event stream.
 
     Malformed lines are skipped rather than raised on. Half an answer is worth
     more than none, and the invariants downstream will refuse it if it is not.
@@ -283,13 +306,16 @@ async def _events(response: httpx.Response) -> AsyncIterator[tuple[str, Usage | 
             log.debug("skipping unparseable stream line", extra={"line": payload[:120]})
             continue
         usage = Usage.from_payload(event.get("usage")) if event.get("usage") else None
+        model = event.get("model")
+        served = model if isinstance(model, str) else ""
         for choice in event.get("choices") or []:
             content = (choice.get("delta") or {}).get("content")
             if content:
-                yield content, usage
+                yield _Event(content=content, usage=usage, model=served)
                 usage = None
-        if usage is not None:
-            yield "", usage
+                served = ""
+        if usage is not None or served:
+            yield _Event(usage=usage, model=served)
 
 
 def _count(value: object) -> int:

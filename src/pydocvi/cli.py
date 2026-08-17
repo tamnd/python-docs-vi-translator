@@ -8,7 +8,7 @@ enough to read in one screen.
 import asyncio
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Annotated, NoReturn
 
@@ -477,28 +477,81 @@ def fleet_probe() -> None:
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    quick: Annotated[
+        bool, typer.Option("--quick", help="Health only. Do not spend a call per route.")
+    ] = False,
+) -> None:
     """Say whether a run can start, and exit 3 if it cannot.
 
     The command to put in front of anything expensive. Its exit code is what the
     runbook's ``set -e`` keys on, which is why it is a top-level command rather
     than a subcommand of ``fleet``.
+
+    It asks every healthy route to complete one short call, which costs about a
+    minute for the fleet. That is new, and it is here because the cheap version
+    of this command passed a host that answers ``/v1/health`` with 200 and then
+    never finishes a completion. Saying a run can start when it cannot is the
+    one thing this command must not do, so the expensive question is the default
+    and ``--quick`` is for the person who only wants to know about tunnels.
     """
     known = _working_routes()
     manager = fleet.Fleet(known)
-    diagnosis = fleet.Diagnosis(
-        tunnels=[manager.probe(route) for route in known],
-        missing_keys=routes.missing_keys(known),
-        cooling=[],
-    )
-    for tunnel in diagnosis.tunnels:
+    tunnels = [manager.probe(route) for route in known]
+    for tunnel in tunnels:
         colour = "green" if tunnel.up else "red"
         console.print(f"[{colour}]{tunnel}[/{colour}]  {tunnel.detail}")
+
+    missing = routes.missing_keys(known)
+    healthy = [route for route in known if _named(tunnels, route.name)]
+    answered: list[fleet.Liveness] = []
+    if not quick and healthy and not missing:
+        console.print(f"asking {len(healthy)} route(s) to complete a call, a minute or so")
+        answered = asyncio.run(_alive(healthy, say=_alive_line))
+
+    diagnosis = fleet.Diagnosis(
+        tunnels=tunnels, missing_keys=missing, cooling=[], answered=answered
+    )
     for name in diagnosis.missing_keys:
         console.print(f"[red]{name} is not set in this shell[/red]")
+    for result in diagnosis.answered:
+        if result.substituted:
+            console.print(
+                f"[yellow]{result.route} was asked for {result.asked} "
+                f"and served {result.served}[/yellow]"
+            )
     console.print(diagnosis.summary)
     if not diagnosis.healthy:
         raise typer.Exit(ExitCode.FLEET_UNREACHABLE)
+
+
+def _named(tunnels: Sequence[fleet.Tunnel], name: str) -> bool:
+    return any(tunnel.up for tunnel in tunnels if tunnel.route == name)
+
+
+def _alive_line(result: fleet.Liveness) -> None:
+    colour = "green" if result.up else "red"
+    console.print(f"[{colour}]{result}[/{colour}]")
+
+
+async def _alive(
+    known: Sequence[routes.Route],
+    *,
+    say: Callable[[fleet.Liveness], None] = lambda _: None,
+) -> list[fleet.Liveness]:
+    """Ask every route for one completion, all of them at once.
+
+    Concurrently, unlike ``bench``, because this measures nothing and a dead
+    host is two minutes of waiting that the healthy ones should not be queued
+    behind.
+    """
+    async with Client(retries=0) as client:
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(fleet.alive(client, route)) for route in known]
+        results = [task.result() for task in tasks]
+    for result in results:
+        say(result)
+    return results
 
 
 @fleet_app.command("bench")
