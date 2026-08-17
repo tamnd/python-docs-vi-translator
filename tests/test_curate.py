@@ -249,16 +249,22 @@ class TestMalformedAnswers:
         reply = curate.read(batch("iterable"), "khả lặp")
         assert len(reply.dropped) == 1 and reply.accepted == ()
 
-    def test_an_index_the_batch_never_had_is_reported(self):
+    def test_an_index_the_batch_never_had_is_reported_and_nothing_it_touched_is_kept(self):
+        """The parser reads a line that does not continue the sequence as text,
+        so the stray lands in the body above it and ``G-b`` refuses a rendering
+        that runs over lines. Reported twice and accepted never."""
         reply = curate.read(batch("iterable"), answered("1. iterable = khả lặp", "9. x = y"))
-        assert any(problem.detail.startswith("entry 9") for problem in reply.dropped)
+        assert reply.accepted == ()
+        assert any("9" in problem.detail for problem in reply.dropped)
+        assert any(problem.rule == "G-b" for problem in reply.dropped)
 
-    def test_a_repeated_index_is_reported(self):
+    def test_a_repeated_index_costs_the_term_it_repeats_and_no_other(self):
         reply = curate.read(
             batch("iterable", "decorator"),
             answered("1. iterable = khả lặp", "1. iterable = lặp được", f"2. decorator = {KEEP}"),
         )
-        assert any("repeated" in problem.detail for problem in reply.dropped)
+        assert [term.en for term in reply.accepted] == ["decorator"]
+        assert any(problem.rule == "G-b" for problem in reply.dropped)
 
     def test_narration_before_the_first_entry_is_reported(self):
         reply = curate.read(
