@@ -155,27 +155,39 @@ def l02_not_the_source(corpus: Corpus) -> Iterator[Finding]:
     refusing the work or a classifier that should have called it passthrough,
     and both are worth a line in the report.
 
-    An entry whose whole ``msgid`` is a term the glossary keeps in English is
-    exempt too, and that exemption is the reason the glossary has a ``keep_en``
-    field at all. Narrowing the identifier rule put 6 558 single-word entries
-    into :meth:`Corpus.prose` for the first time and took this check from 10
-    findings to 144. A third of them were entries reading ``sys``, ``builtins``,
-    ``import``, ``exec``, ``NaN`` and ``Infinity``, all of which are index
-    entries naming a module or a statement, and all of which a reviewer left in
-    English because that is what a Vietnamese programmer calls them.
+    An entry whose whole ``msgid`` is a term the glossary marks as standing
+    alone is exempt too, and that exemption is the reason the glossary carries
+    the flag. Narrowing the identifier rule put 6 558 single-word entries into
+    :meth:`Corpus.prose` for the first time and took this check from 10 findings
+    to 144. A third of them were entries reading ``sys``, ``builtins``,
+    ``import``, ``exec`` and ``NaN``, all of which are index entries naming a
+    module or a statement, and all of which a reviewer left in English because
+    that is what a Vietnamese programmer calls them.
 
     Nothing in the string can tell those from ``module``, ``object`` and
     ``type``, which are the other 89 and are ordinary English words used as
     index categories. ``sys`` and ``Notes`` are the same shape, and that is the
     discrimination the classifier was narrowed for being unable to make. So it
-    is made once, by hand, in the glossary, where it is a written decision that
-    ``G03`` then checks in both directions rather than an exception buried here.
+    is made once, by hand, in the glossary, where it is a written decision
+    rather than an exception buried here.
 
-    Matched on the whole ``msgid`` and not on a substring. A kept term inside a
+    Read from :attr:`Glossary.standalone` and not from ``keep_en``, because the
+    two questions came apart. ``float`` is ``số thực`` in a sentence and the
+    name of a C type in the table of ``struct`` format codes, and while this
+    check read ``keep_en`` a row could only answer one of those. 69 of the 94
+    findings ``G03`` was reporting were correct translations of ``type`` and
+    ``list``, held there by rows that said "keep this in English" when what they
+    meant was "leave the table cell alone".
+
+    Matched on the whole ``msgid`` and not on a substring. A term inside a
     sentence says nothing about whether the sentence was translated, and this
-    check is about the entry.
+    check is about the entry. Nor is the match folded or de-inflected: ``Lists``
+    is a section heading three times in the corpus, followed each time by prose
+    beginning "Lists are mutable sequences", and a heading is translated.
     """
-    kept = {term.en for term in corpus.glossary.kept} if corpus.glossary is not None else set()
+    kept = (
+        {term.en for term in corpus.glossary.standalone} if corpus.glossary is not None else set()
+    )
     for one, entry in corpus.translated():
         if classify.classify(entry.msgid) in PASSTHROUGH:
             continue
