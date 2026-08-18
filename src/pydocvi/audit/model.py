@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
+from pydocvi import classify
 from pydocvi.apply import Stamp
 from pydocvi.catalog import Catalog, Entry
 from pydocvi.glossary import Glossary
@@ -153,6 +154,29 @@ class Corpus:
             for entry in one:
                 if entry.msgstr:
                     yield one, entry
+
+    def prose(self) -> Iterator[tuple[Catalog, Entry]]:
+        """Every translated entry a model was ever asked about.
+
+        The subject of every check that judges a translation as a translation. A
+        copied doctest has a ``msgstr`` identical to its ``msgid`` because that
+        is what it is for, so asking whether it used the glossary's Vietnamese
+        for "list" is asking whether ``>>> sorted(d.keys())`` should have been
+        rewritten, and the answer the check wants is the wrong one.
+
+        This became visible the day ``apply`` started minting the 13 900 copies
+        rather than leaving them as empty English: ``G02`` went from 321 findings
+        to 2 836 and ``G04`` from 245 to 2 785 without a single translation
+        changing. Every one of the new ones was a code block.
+
+        Asked of the classifier rather than of the ``passthrough=`` marker, the
+        same way ``L02`` asks. The marker is the right source for ``L04``, whose
+        whole job is to find where the two have drifted apart, and the wrong one
+        here, where the question is what the entry is now.
+        """
+        for one, entry in self.translated():
+            if classify.classify(entry.msgid).translatable:
+                yield one, entry
 
     def paired(self) -> Iterator[tuple[Catalog, Entry, Entry | None]]:
         """Every translated entry beside the upstream entry it claims to be.

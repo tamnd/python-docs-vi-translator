@@ -216,6 +216,30 @@ class TestQualityAdherence:
         )
         assert "| list | 2 |" in report.quality(corpus_of(one, glossary=glossary))
 
+    def test_the_human_rate_is_reported_apart_from_the_machine_one(self) -> None:
+        """``human`` records where a string came from and says nothing about how
+        good it is. The inherited corpus was written by many people over several
+        years against no agreed term list, and averaging it in with the machine
+        column hides the one number that would show it."""
+        glossary = Glossary(version=1, terms=(Term(en="list", vi="danh sách"),))
+        one = catalog_of(
+            reviewed("Return a list.", "Trả về một mảng."),
+            machine("Another list.", "Một danh sách khác."),
+        )
+        written = report.quality(corpus_of(one, glossary=glossary))
+        assert "| human | 1 | 1 | 1.00 | 1 |" in written
+        assert "| machine | 1 | 0 | 0.00 | 0 |" in written
+
+    def test_a_copied_code_block_is_not_counted_as_ignoring_the_glossary(self) -> None:
+        """It has a ``msgstr`` identical to its ``msgid`` because that is what a
+        passthrough is. Asking whether it used the Vietnamese for "list" is
+        asking whether ``>>> sorted(d.keys())`` should have been rewritten."""
+        glossary = Glossary(version=1, terms=(Term(en="list", vi="danh sách"),))
+        one = catalog_of(copied(">>> sorted(list(d))"))
+        assert "Every term that appeared was rendered." in report.quality(
+            corpus_of(one, glossary=glossary)
+        )
+
     def test_a_checkout_with_no_glossary_says_so(self) -> None:
         assert "No glossary on this checkout." in report.quality(corpus_of())
 

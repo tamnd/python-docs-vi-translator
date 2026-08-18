@@ -17,6 +17,7 @@ import pydocvi
 from conftest import FAKE_KEY, FakeRunner
 from pydocvi import (
     __version__,
+    catalog,
     cli,
     config,
     fleet,
@@ -27,7 +28,7 @@ from pydocvi import (
     translate,
     worker,
 )
-from pydocvi.catalog import segment_id
+from pydocvi.catalog import Entry, segment_id
 from pydocvi.cli import ExitCode, app, main
 from pydocvi.client import Answer
 from pydocvi.fleet import Ran
@@ -1296,6 +1297,29 @@ class TestApply:
         result = runner.invoke(app, ["apply", "--check"])
         assert result.exit_code == ExitCode.CHECK_FAILED
         assert "bugs.po" in result.stdout
+
+    def test_refuzzy_replaces_an_unmarked_string_the_memory_calls_machine(
+        self, workspace: Path, content: Path
+    ) -> None:
+        """The inherited corpus, in miniature: a translation with no fuzzy flag
+        and no comment, which is indistinguishable from a reviewer's sign-off
+        until you ask the memory what wrote it."""
+        _remember(workspace, "Dealing with Bugs", "Xử lý lỗi")
+        runner.invoke(app, ["apply"])
+        target = content / "bugs.po"
+
+        def written() -> Entry:
+            return next(e for e in catalog.read(target) if e.msgid == "Dealing with Bugs")
+
+        unmarked = written().with_msgstr("Bản Google cũ", fuzzy=False).with_comments([])
+        catalog.write(catalog.read(target).replace_entries([unmarked]), target)
+
+        assert runner.invoke(app, ["apply"]).exit_code == ExitCode.OK
+        assert written().msgstr == "Bản Google cũ"
+
+        assert runner.invoke(app, ["apply", "--refuzzy"]).exit_code == ExitCode.OK
+        assert written().msgstr == "Xử lý lỗi"
+        assert written().fuzzy
 
     def test_one_file_can_be_named(self, workspace: Path, content: Path) -> None:
         _remember(workspace, "Dealing with Bugs", "Xử lý lỗi")

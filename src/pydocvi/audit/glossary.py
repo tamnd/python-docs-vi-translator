@@ -102,7 +102,7 @@ def g04_no_english_term_survives(corpus: Corpus) -> Iterator[Finding]:
     if corpus.glossary is None:
         return
     matcher = corpus.glossary.matcher()
-    for one, entry in corpus.translated():
+    for one, entry in corpus.prose():
         where = corpus.relative(one.path)
         left = matcher.select(entry.msgstr, where=where, msgctxt=entry.msgctxt)
         for term in left:
@@ -149,7 +149,7 @@ def g06_glossary_version_is_current(corpus: Corpus) -> Iterator[Finding]:
     if corpus.glossary is None or corpus.memory is None:
         return
     current = corpus.glossary.version
-    for one, entry in corpus.translated():
+    for one, entry in corpus.prose():
         known = corpus.memory.lookup(entry.msgid, entry.msgctxt)
         if known is None or known.source != "machine":
             continue
@@ -174,7 +174,7 @@ def _missing(corpus: Corpus) -> Iterator[tuple[Catalog, Entry, terminology.Term]
     if corpus.glossary is None:
         return
     matcher = corpus.glossary.matcher()
-    for one, entry in corpus.translated():
+    for one, entry in corpus.prose():
         where = corpus.relative(one.path)
         for term in matcher.missing(entry.msgid, entry.msgstr, where=where, msgctxt=entry.msgctxt):
             yield one, entry, term

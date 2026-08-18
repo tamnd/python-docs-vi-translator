@@ -319,27 +319,52 @@ def _adherence(corpus: Corpus, *, limit: int) -> list[str]:
     check with 4 000 findings tells a reviewer nothing; the twenty terms behind
     most of them tells them what to fix or what to argue with, and at this stage
     arguing with the row is as likely to be right.
+
+    Split by who wrote the entry, because ``human`` is a record of where a string
+    came from and not a claim about how good it is. The human column here is the
+    inherited Transifex corpus, written by many people over several years against
+    no agreed term list, and it is the column most likely to disagree with itself.
+    A glossary miss in it is not automatically the glossary being right: it may
+    be two translators who each picked a word, and the way to find that out is to
+    be able to see the two rates side by side rather than to average them.
     """
     if corpus.glossary is None:
         return ["## Glossary adherence", "", "No glossary on this checkout."]
     matcher = corpus.glossary.matcher()
     missed: Counter[str] = Counter()
-    seen = 0
-    for one, entry in corpus.translated():
-        seen += 1
+    seen: Counter[Written] = Counter()
+    misses: Counter[Written] = Counter()
+    terms: dict[Written, set[str]] = {}
+    for one, entry in corpus.prose():
+        wrote = written_as(entry)
+        seen[wrote] += 1
         where = corpus.relative(one.path)
         for term in matcher.missing(entry.msgid, entry.msgstr, where=where, msgctxt=entry.msgctxt):
             missed[term.en] += 1
+            misses[wrote] += 1
+            terms.setdefault(wrote, set()).add(term.en)
     lines = [
         "## Glossary adherence",
         "",
-        f"{len(corpus.glossary)} terms against {seen:,} translated entries. "
+        f"{len(corpus.glossary)} terms against {sum(seen.values()):,} translated entries. "
         f"{sum(missed.values()):,} misses over {len(missed)} terms.",
         "",
     ]
     if not missed:
         return [*lines[:3], "", "Every term that appeared was rendered."]
-    lines += ["| Term | Misses |", "| --- | ---: |"]
+    lines += [
+        "| Written by | Entries | Misses | Misses per entry | Terms |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    for wrote in Written:
+        if not seen[wrote]:
+            continue
+        rate = misses[wrote] / seen[wrote]
+        lines.append(
+            f"| {wrote.value} | {seen[wrote]:,} | {misses[wrote]:,} | "
+            f"{rate:.2f} | {len(terms.get(wrote, ())):,} |"
+        )
+    lines += ["", "| Term | Misses |", "| --- | ---: |"]
     for english, count in sorted(missed.items(), key=lambda pair: (-pair[1], pair[0]))[:limit]:
         lines.append(f"| {english} | {count:,} |")
     return lines
