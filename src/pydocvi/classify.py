@@ -28,7 +28,17 @@ _WORD = re.compile(r"[A-Za-z]{2,}")
 #: A version number, a dotted identifier, a bare token: whatever a person would
 #: write the same way in any language.
 _VERSION = re.compile(r"^\d+(\.\d+)*$")
-_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
+
+#: A dotted identifier, each segment of which is an identifier. Written segment
+#: by segment rather than as one character class so that a trailing dot does not
+#: count: ``Success.`` is a one-word sentence and ``os.path`` is a module.
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
+
+#: What makes an identifier-shaped string an identifier rather than a word.
+#:
+#: A dot, an underscore or a digit. Without one of the three, ``Footnotes`` and
+#: ``sys`` are the same shape and this module has no way to tell them apart.
+_QUALIFIED = re.compile(r"[._0-9]")
 
 _DOCTEST = ">>>"
 _CONTINUED = "..."
@@ -217,11 +227,58 @@ def _tight(line: str) -> bool:
 
 
 def is_version_marker(msgid: str) -> bool:
-    """Whether the entry is a version number or a bare identifier."""
+    """Whether the entry is a version number or a qualified identifier.
+
+    Qualified is the load-bearing word and it was not here at first. The rule
+    used to be that any single token of identifier characters was an identifier,
+    and a single English word is a single token of identifier characters. So
+    ``Footnotes`` was an identifier. So were ``Availability``, ``Examples``,
+    ``Meaning``, ``Exceptions``, ``Author`` and 1 335 other ordinary words:
+    9 366 entries over the corpus, every one of them a heading or a table cell
+    that wants translating.
+
+    The first paragraph of this module says a false positive here leaves an
+    English sentence sitting in the corpus wearing a translation's clothes. That
+    is not a hypothetical any more and this rule is what produced it. 2 808 of
+    those entries were copied through from the ``msgid`` and stamped
+    ``passthrough=version_marker``, which is a claim that the string needs no
+    translation: ``Availability`` 62 times, ``Exceptions`` 25, ``Author`` 21,
+    ``Introduction`` 18, ``Description`` 15, ``Notes`` 11. English headings,
+    written into a Vietnamese catalog, certified by the tool that wrote them.
+
+    The other 6 558 already had a person's translation, and those were hidden a
+    different way. A non-translatable kind is excluded from
+    :meth:`Corpus.prose`, so no check that reads a translation was looking at
+    any of them. 41 of the words are rendered more than one way across 988
+    entries, and the disagreements are not stylistic:
+
+    - ``sys`` is ``hệ thống`` in 38 entries and ``sys`` in 20. ``os`` is ``hệ
+      điều hành`` in all 28. Module names translated into Vietnamese, which is
+      the failure named at the top of this module.
+    - ``object`` is ``sự vật`` in 50 and ``vật thể`` in 23, both of which are a
+      physical thing rather than the computing sense.
+    - ``string`` is ``sợi dây`` in 8, which is a length of rope, and
+      ``statement`` is ``tuyên bố`` in 19, which is a public declaration.
+
+    The protection the top of this module talks about is not this function's
+    doing and never was. ``:mod:`asyncio``` and ``` ``sys` ``` reach
+    :func:`is_noop`, because stripping the markup leaves nothing behind. This
+    function only ever sees a word with no markup on it, and for those the safe
+    direction is the one stated up there: a wasted call costs a call, and an
+    English heading in a Vietnamese page is not noticed until a reader meets it.
+
+    So an identifier now has to look like one. A dot, an underscore or a digit
+    somewhere in it, which keeps ``os.path``, ``__init__``, ``size_t``,
+    ``PyMem_RawMalloc`` and ``3.14``, and lets go of every bare word. It is not
+    free: the 2 808 go back to being untranslated, which is what they are, and
+    a full run grows by 43 batches.
+    """
     stripped = msgid.strip()
     if not stripped or "\n" in stripped:
         return False
-    return bool(_VERSION.match(stripped) or _IDENTIFIER.match(stripped))
+    if _VERSION.match(stripped):
+        return True
+    return bool(_IDENTIFIER.match(stripped)) and bool(_QUALIFIED.search(stripped))
 
 
 def is_noop(msgid: str) -> bool:

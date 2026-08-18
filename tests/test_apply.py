@@ -103,11 +103,11 @@ class TestWritingATranslation:
         would be a lie in the one place the audit trusts. The kind is the one
         classify gives, which is how a reader of the file can check the claim
         against the same rule the pipeline used."""
-        cat = upstream(block("abs"))
+        cat = upstream(block("os.path"))
         memory = Memory(
-            [Segment.from_entry(Entry(msgid="abs", msgstr="abs"), source="passthrough")]
+            [Segment.from_entry(Entry(msgid="os.path", msgstr="os.path"), source="passthrough")]
         )
-        entry = entry_of(applied(cat, memory), "abs")
+        entry = entry_of(applied(cat, memory), "os.path")
         assert entry.comments[-1] == "# pydocvi: passthrough=version_marker"
 
     def test_a_human_translation_from_upstream_lands_unfuzzy_and_unstamped(self) -> None:

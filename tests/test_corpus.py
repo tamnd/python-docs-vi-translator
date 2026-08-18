@@ -26,20 +26,26 @@ EXPECTED_WORDS = 1_711_382
 EXPECTED_CHARACTERS = 12_526_506
 EXPECTED_HUMAN = 1_435
 
-#: Re-measured after the code rules landed. 917 entries moved out of prose and
-#: none moved into it, which is what these numbers are here to make visible: the
-#: classifier decides what a run costs and what it never looks at, and both are
-#: silent from any other angle. The 20 that left ``noop`` and the 4 that left
-#: ``version_marker`` were already passthrough and only changed which rule
-#: explains them.
+#: Re-measured after the identifier rule was narrowed to need a dot, an
+#: underscore or a digit. 3 193 entries left ``version_marker``: 3 164 to prose
+#: and 29 to ``noop``, the latter being single letters that no rule but the
+#: word rule ever explained.
+#:
+#: This is the first re-measure where the movement is towards prose, and that
+#: direction is the expensive one. It is +43 batches on a full run and 2 808
+#: entries in the content repo that go back to being untranslated, because that
+#: is what they were: English headings the old rule copied through and stamped
+#: as needing no translation. The classifier decides what a run costs and what
+#: it never looks at, and both are silent from any other angle, which is why
+#: these numbers are written down.
 EXPECTED_KINDS = {
-    "prose": 72_496,
-    "noop": 5_692,
+    "prose": 75_660,
+    "noop": 5_721,
     "doctest": 2_121,
     "literal_block": 2_856,
-    "version_marker": 3_843,
+    "version_marker": 650,
 }
-EXPECTED_BATCHES = 2_759
+EXPECTED_BATCHES = 2_802
 EXPECTED_CHANGELOG_BATCHES = 576
 EXPECTED_OVERSIZED = 6
 EXPECTED_LARGEST_ENTRY = 12_707
