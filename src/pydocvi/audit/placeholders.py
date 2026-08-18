@@ -244,13 +244,21 @@ def p07_code_is_byte_identical(corpus: Corpus) -> Iterator[Finding]:
 
 @check("P08", Group.PLACEHOLDERS, hard=True, title="no fence or horizontal rule")
 def p08_no_fence(corpus: Corpus) -> Iterator[Finding]:
-    """No ``msgstr`` opens a fence or a ``---``.
+    """No ``msgstr`` opens a fence or a ``---`` that its ``msgid`` did not.
 
     Both are a model formatting its answer rather than answering, and both are
     valid reST that renders as something the English does not.
+
+    Unless the English opened the same way, which is the clause this check was
+    missing. Every other rule in this module reads the pair, and this one read
+    the translation alone, so a ``msgid`` of ``---`` copied through as ``---``
+    was reported as a model drawing a rule under its answer. Two entries in the
+    corpus are that: a literal ``---`` in ``c-api/call.po`` and the inheritance
+    diagram in ``howto/mro.po``, which opens with a line of dashes because it is
+    a picture of a class hierarchy.
     """
     for one, entry in corpus.translated():
-        if _FENCE.match(entry.msgstr):
+        if _FENCE.match(entry.msgstr) and not _FENCE.match(entry.msgid):
             yield Finding(
                 check="P08",
                 path=corpus.relative(one.path),
