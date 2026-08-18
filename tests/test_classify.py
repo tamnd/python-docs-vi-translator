@@ -150,13 +150,43 @@ class TestCodeWithNoIndent:
 
 
 class TestVersionMarker:
-    @pytest.mark.parametrize("msgid", ["3.14", "3", "3.14.0", "asyncio", "os.path", "_thread"])
-    def test_bare_versions_and_identifiers(self, msgid: str) -> None:
+    @pytest.mark.parametrize(
+        "msgid",
+        ["3.14", "3", "3.14.0", "os.path", "_thread", "__init__", "size_t", "PyMem_RawMalloc"],
+    )
+    def test_bare_versions_and_qualified_identifiers(self, msgid: str) -> None:
         assert classify.is_version_marker(msgid)
 
     @pytest.mark.parametrize("msgid", ["version 3.14", "3.14 and later", "", "a b"])
     def test_anything_with_a_second_token(self, msgid: str) -> None:
         assert not classify.is_version_marker(msgid)
+
+    @pytest.mark.parametrize(
+        "msgid", ["Footnotes", "Availability", "Examples", "Meaning", "sys", "os", "asyncio"]
+    )
+    def test_a_bare_word_is_not_an_identifier(self, msgid: str) -> None:
+        """These are headings and table cells, and the looser rule that called
+        them identifiers reached 9 366 entries. 2 808 of those it copied through
+        as English and stamped as needing no translation, and the other 6 558 it
+        took out of everything that checks what a translation says, which is how
+        ``sys`` came to be ``hệ thống`` in 38 entries and ``os`` to be ``hệ điều
+        hành`` in all 28."""
+        assert not classify.is_version_marker(msgid)
+        assert classify.classify(msgid).translatable
+
+    def test_a_one_word_sentence_is_not_a_dotted_name(self) -> None:
+        """A trailing dot is punctuation. Writing the rule as one character
+        class rather than segment by segment lets ``Success.`` through it."""
+        assert not classify.is_version_marker("Success.")
+
+    @pytest.mark.parametrize("msgid", [":mod:`asyncio`", "``sys``", ":class:`frozenset`"])
+    def test_the_markup_this_module_worries_about_is_a_no_op_not_a_marker(self, msgid: str) -> None:
+        """The reason narrowing the rule above is safe. Getting ``:mod:`asyncio```
+        back as ``:mod:`không đồng bộ``` is what the module docstring calls the
+        embarrassing failure, and nothing in the identifier rule was ever
+        standing between the corpus and it: strip the markup and there is no word
+        left, so these reach :func:`is_noop` and stop there."""
+        assert classify.classify(msgid) is Kind.NOOP
 
 
 class TestClassify:
