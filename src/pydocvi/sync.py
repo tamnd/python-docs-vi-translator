@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydocvi import catalog
+from pydocvi import catalog, classify
 from pydocvi.catalog import Catalog
 from pydocvi.memory import Memory, Segment
 
@@ -112,6 +112,19 @@ def quote(value: str) -> str:
     diagnose.
     """
     return f'"{value}"'
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class HumanLoad:
+    """What reconciling the memory against the mirror did.
+
+    Both numbers, rather than the one ``load_human`` used to return. A run that
+    stores 0 and drops 136 and a run that does nothing are the same integer from
+    the caller's side, and the first is the one worth printing.
+    """
+
+    stored: int = 0
+    dropped: int = 0
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -218,18 +231,74 @@ def human_segments(catalogs: Iterable[Catalog]) -> list[Segment]:
     marked fuzzy. Fuzzy means gettext is not confident the translation still
     matches the source, and inheriting one of those as ground truth would seed
     the memory with the exact thing it exists to avoid.
+
+    And when it is prose. A doctest is copied, never translated, which is the
+    rule ``P07`` enforces on everything this pipeline writes, and it was not
+    being asked of the 136 code entries the mirror hands over as somebody's
+    work. ``human`` is a provenance and not a grade: it says a person typed the
+    string, and 30 of those 136 are a person having typed over the code.
+
+    What that looks like in the corpus, from ``tutorial/introduction.po``::
+
+        File "<stdin>", line 1, in <module>     the English
+        File "1", line 1, in 2                  the translation
+
+    ``<stdin>`` and ``<module>`` are gone. Elsewhere it is the indentation
+    inside a ``for`` body flattened to one space, the carets under a syntax
+    error unaligned from what they point at, and a column-aligned option table
+    reflowed. Every one is an example a reader copies out and then has to
+    debug, and the comment translation they were made for is worth less than
+    that: comments are M8, with a prompt of their own and a check that every
+    code line came back byte-identical.
+
+    The other 106 are already byte-identical, and dropping those loses nothing.
+    :func:`apply` mints them from the ``msgid`` with ``passthrough=doctest`` on
+    them, which is the same string with an accurate account of where it came
+    from instead of a claim that somebody translated it.
+
+    Only code. A no-op is not translatable either and is left alone, because
+    one of them is a ``:ref:`` whose display text a person translated correctly
+    and the classifier calls markup. That entry is a bug in :func:`is_noop`,
+    not a licence to throw the translation away.
     """
     out: list[Segment] = []
     for cat in catalogs:
         for entry in cat:
-            if entry.translated and not entry.fuzzy:
+            if entry.translated and not entry.fuzzy and not classify.classify(entry.msgid).code:
                 out.append(Segment.from_entry(entry, source="human"))
     return out
 
 
-def load_human(memory: Memory, catalogs: Iterable[Catalog]) -> int:
-    """Load human translations into the memory. Returns how many were stored."""
-    return memory.extend(human_segments(catalogs))
+def load_human(memory: Memory, catalogs: Iterable[Catalog]) -> HumanLoad:
+    """Bring the memory's human half into line with the mirror.
+
+    Stores what the mirror offers and drops the ``human`` segments it no longer
+    does, which is a reconciliation where this used to be an ``extend``.
+
+    The difference is only visible when :func:`human_segments` gets stricter, and
+    it got stricter once: 136 code entries stopped qualifying, and an ``extend``
+    leaves all 136 sitting in the memory as somebody's translation of a doctest
+    for ``apply`` to write back. The alternative was editing them out of the
+    manifest by hand, and a memory that has been hand-edited is no longer a thing
+    the content repo can be rebuilt from, which is the property the whole
+    projection rests on.
+
+    Dropping is safe because the mirror is the only place a ``human`` segment
+    comes from. There is no command in this tool that promotes a string to
+    ``human``, deliberately (spec 02 §4), so anything of that provenance in the
+    memory was read out of Transifex and can be read again.
+
+    Only ``human``. A ``machine`` segment is the one thing here that genuinely
+    cannot be rebuilt without spending the run again, and nothing about the
+    mirror is evidence either way about it.
+    """
+    wanted = human_segments(catalogs)
+    stored = memory.extend(wanted)
+    keep = {segment.id for segment in wanted}
+    dropped = [s.id for s in memory if s.source == "human" and s.id not in keep]
+    for one in dropped:
+        memory.remove(one)
+    return HumanLoad(stored=stored, dropped=len(dropped))
 
 
 def diff(memory: Memory, catalogs: Iterable[Catalog]) -> SyncDiff:

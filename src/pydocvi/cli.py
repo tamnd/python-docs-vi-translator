@@ -136,8 +136,8 @@ def sync_command(
     )
 
     if human:
-        stored = sync.load_human(memory, catalogs)
-        console.print(f"human segments stored: {stored:,}")
+        loaded = sync.load_human(memory, catalogs)
+        console.print(f"human segments stored: {loaded.stored:,}   dropped: {loaded.dropped:,}")
 
     if dry_run:
         console.print("[yellow]dry run, nothing written[/yellow]")

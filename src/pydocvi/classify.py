@@ -91,6 +91,18 @@ class Kind(StrEnum):
     def translatable(self) -> bool:
         return self is Kind.PROSE
 
+    @property
+    def code(self) -> bool:
+        """Whether the entry is source text, to be copied and never written.
+
+        A narrower claim than ``not translatable``. A no-op is not translatable
+        either, but it is markup, and the difference decides what happens to a
+        translation somebody has already made of one. ``P07`` reads this set and
+        so does :func:`sync.human_segments`, and they held a copy each until the
+        two disagreed about one entry.
+        """
+        return self in {Kind.DOCTEST, Kind.LITERAL_BLOCK}
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Counts:

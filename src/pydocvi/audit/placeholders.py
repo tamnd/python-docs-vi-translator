@@ -228,7 +228,7 @@ def p07_code_is_byte_identical(corpus: Corpus) -> Iterator[Finding]:
     """
     for one, entry in corpus.translated():
         kind = classify.classify(entry.msgid)
-        if kind not in {classify.Kind.DOCTEST, classify.Kind.LITERAL_BLOCK}:
+        if not kind.code:
             continue
         if entry.msgstr != entry.msgid:
             yield Finding(

@@ -26,6 +26,17 @@ EXPECTED_WORDS = 1_711_382
 EXPECTED_CHARACTERS = 12_526_506
 EXPECTED_HUMAN = 1_435
 
+#: How many of those the memory takes, which stopped being the same number when
+#: ``human_segments`` started asking whether the entry is code. The 136 in the
+#: gap are doctests and literal blocks, and 30 of them are a person having typed
+#: over the code rather than translated anything. The rest are already
+#: byte-identical and ``apply`` mints them from the ``msgid`` instead.
+#:
+#: Two constants where there was one, on purpose. The mirror's count is a fact
+#: about the mirror and this is a decision this tool makes, and folding them
+#: back together would hide the next change to either.
+EXPECTED_HUMAN_SEGMENTS = 1_299
+
 #: Re-measured after the identifier rule was narrowed to need a dot, an
 #: underscore or a digit. 3 193 entries left ``version_marker``: 3 164 to prose
 #: and 29 to ``noop``, the latter being single letters that no rule but the
@@ -95,9 +106,19 @@ def test_segment_ids_are_unique_within_a_file(catalogs: list[catalog.Catalog]) -
 
 def test_human_translations_are_loaded_as_human(catalogs: list[catalog.Catalog]) -> None:
     segments = sync.human_segments(catalogs)
-    assert len(segments) == EXPECTED_HUMAN
+    assert len(segments) == EXPECTED_HUMAN_SEGMENTS
     assert {s.source for s in segments} == {"human"}
     assert all(s.msgstr for s in segments)
+
+
+def test_no_code_entry_reaches_the_memory_as_somebody_s_translation(
+    catalogs: list[catalog.Catalog],
+) -> None:
+    """The 136 the count above leaves behind. A doctest is copied and never
+    translated, so a ``human`` segment holding one is a person's edit of the
+    code sitting in the memory waiting to be written back over it."""
+    segments = sync.human_segments(catalogs)
+    assert [s.msgid[:60] for s in segments if classify.classify(s.msgid).code] == []
 
 
 def test_markup_protection_round_trips_on_every_msgid(catalogs: list[catalog.Catalog]) -> None:
