@@ -269,6 +269,27 @@ def apply_entry(
     pipeline failing until the memory caught up with the catalog. What matters is
     that no machine string ever lands on top of a human one, and none does.
 
+    A code entry is copied whatever the memory holds for it, which is a rule
+    about the memory being wrong rather than empty. ``P07`` says a doctest is
+    byte-identical to its ``msgid``, and until this clause existed the only thing
+    standing behind that was nothing having queued one: :func:`batch` filters
+    non-prose out, so a segment for a code entry could only come from a run made
+    before the classifier learned to recognise it. Five did. ``python fibo.py
+    <arguments>`` came back as ``python fibo.py <đối số>`` and was written into
+    the corpus, because the segment was there and this function had no reason to
+    doubt it.
+
+    Refusing it here rather than pruning the memory is what makes the guarantee
+    hold going forward. The classifier will get stricter again, that is the
+    direction it has moved twice, and each time it does the memory acquires
+    another handful of translations of things that turned out to be code. What
+    they are worth is decided by what the string is now, not by what some earlier
+    run thought when it asked.
+
+    The human guard still comes first, so this cannot quietly replace a reviewed
+    string with the English. Getting past that is ``--refuzzy`` and nothing else,
+    which is the same answer as everywhere else in this module.
+
     An entry the memory has nothing for is either prose nobody has translated
     yet, which is left as upstream had it, or a no-op, which is copied through
     with the classifier's reason on it. See :func:`_copied`.
@@ -285,6 +306,8 @@ def apply_entry(
     """
     if existing is not None and is_human(existing) and not _contradicted(segment, refuzzy):
         return existing
+    if classify.classify(upstream.msgid).code:
+        return _copied(upstream)
     if segment is None or not segment.msgstr:
         return _copied(upstream) if not _translatable(upstream) else _untranslated(upstream)
     if segment.source == "human":

@@ -174,6 +174,37 @@ class TestCopyingANoOp:
         entry = entry_of(applied(cat, memory), "Added in version 3.9.")
         assert entry.msgstr == "Thêm vào phiên bản 3.9."
 
+    def test_a_segment_for_a_code_entry_is_refused(self) -> None:
+        """Where the memory wins over the copy stops. Five literal blocks in the
+        corpus had a ``gpt-5-6-mini`` segment from a run made before the
+        classifier could recognise them, and this function had no reason to doubt
+        it: ``python fibo.py <arguments>`` was written into the corpus as ``python
+        fibo.py <đối số>``. What a string is worth is decided by what it is now,
+        not by what an earlier run thought when it asked."""
+        code = "python fibo.py <arguments>"
+        cat = upstream(block(code))
+        memory = Memory([machine(code, "python fibo.py <đối số>")])
+        entry = entry_of(applied(cat, memory), code)
+        assert entry.msgstr == code
+        assert entry.comments[-1] == "# pydocvi: passthrough=literal_block"
+
+    def test_refusing_it_does_not_reach_past_the_reviewer(self) -> None:
+        """The human guard comes first, so this cannot quietly replace a reviewed
+        string with the English. ``--refuzzy`` is the only way past it, here as
+        everywhere else in this module."""
+        code = ">>> n  # try it\nNameError"
+        source = upstream(block(code.replace("\n", "\\n")))
+        existing = upstream(block(code.replace("\n", "\\n"), "đã duyệt"))
+        out = apply.apply_catalog(source, existing, Memory(), stamp=STAMP)[0]
+        assert entry_of(out, code).msgstr == "đã duyệt"
+
+    def test_refuzzy_reaches_it(self) -> None:
+        code = ">>> n  # try it\nNameError"
+        source = upstream(block(code.replace("\n", "\\n")))
+        existing = upstream(block(code.replace("\n", "\\n"), "đã duyệt"))
+        out = apply.apply_catalog(source, existing, Memory(), stamp=STAMP, refuzzy=True)[0]
+        assert entry_of(out, code).msgstr == code
+
     def test_a_copy_is_not_counted_as_work_done(self) -> None:
         """Spec 12 §5: a no-op is neither translated nor outstanding. Folding
         13 900 of them into the written column would report a doctest copied

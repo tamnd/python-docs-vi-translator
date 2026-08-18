@@ -194,6 +194,16 @@ class TestClassify:
         assert Kind.PROSE.translatable
         assert not any(kind.translatable for kind in Kind if kind is not Kind.PROSE)
 
+    def test_code_is_the_two_kinds_that_are_source_text(self) -> None:
+        assert {kind for kind in Kind if kind.code} == {Kind.DOCTEST, Kind.LITERAL_BLOCK}
+
+    def test_code_is_narrower_than_not_translatable(self) -> None:
+        """The distinction the two readers of this property turned on. A no-op is
+        not translatable either, and it is markup rather than source text, so a
+        translation somebody made of one is kept where a doctest's is not."""
+        assert not Kind.NOOP.translatable
+        assert not Kind.NOOP.code
+
     def test_ordinary_prose(self) -> None:
         assert classify.classify("Return the sorted list.") is Kind.PROSE
 

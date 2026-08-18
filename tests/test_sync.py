@@ -1,6 +1,8 @@
 from pathlib import Path
 
+from conftest import catalog_of, entry
 from pydocvi import catalog, sync
+from pydocvi.catalog import Catalog
 from pydocvi.memory import Memory
 
 
@@ -46,12 +48,70 @@ def test_human_segments_skip_fuzzy_entries(data_dir: Path) -> None:
     assert sync.human_segments([fuzzed]) == []
 
 
+def reviewed(msgid: str, msgstr: str) -> Catalog:
+    """One catalog holding one entry a person signed off on."""
+    return catalog_of(entry(msgid, msgstr, flags=()))
+
+
+def test_human_segments_skip_code_however_translated_it_looks() -> None:
+    """A doctest is copied and never translated, which is ``P07``'s rule, and the
+    mirror hands over 136 code entries as somebody's work. 30 of those are a
+    person having typed over the code: ``File "<stdin>", line 1, in <module>``
+    arrives as ``File "1", line 1, in 2``. ``human`` says who typed the string,
+    not that the string is right."""
+    coded = reviewed(
+        '>>> n\n  File "<stdin>", line 1, in <module>', '>>> n\nFile "1", line 1, in 2'
+    )
+    assert sync.human_segments([coded]) == []
+
+
+def test_human_segments_skip_code_that_was_copied_correctly_too() -> None:
+    """The other 106 lose nothing by going. ``apply`` mints them from the
+    ``msgid`` with ``passthrough=doctest`` on them, which is the same string with
+    an accurate account of where it came from."""
+    same = ">>> len([1, 2])\n2"
+    assert sync.human_segments([reviewed(same, same)]) == []
+
+
+def test_human_segments_keep_a_no_op_a_person_translated() -> None:
+    """Only code is dropped, not everything the classifier calls non-prose. One
+    no-op in the corpus is a ``:ref:`` whose display text a person translated
+    correctly, and that is a bug in ``is_noop`` rather than a licence to throw
+    the translation away."""
+    noop = reviewed(
+        ":ref:`Documentation on attributes <class-attrs>`.",
+        ":ref:`Tài liệu về các thuộc tính <class-attrs>`.",
+    )
+    assert len(sync.human_segments([noop])) == 1
+
+
 def test_diff_reports_upstream_strings_the_memory_lacks(data_dir: Path) -> None:
     cat = catalog.read(data_dir / "small.po")
     changes = sync.diff(Memory(), [cat])
     assert len(changes.added) == 4
     assert changes.orphaned == ()
     assert not changes.clean
+
+
+def test_load_human_drops_a_stale_human_segment() -> None:
+    """The case this stopped being an ``extend`` for. A doctest the mirror once
+    offered as somebody's translation is still in the memory after the rule that
+    admitted it got stricter, and ``apply`` would write it back over the code."""
+    doctest = entry('>>> n\n  File "<stdin>", line 1, in <module>', "", flags=())
+    memory = Memory([sync.Segment.from_entry(doctest, source="human")])
+    loaded = sync.load_human(memory, [catalog_of(entry("Return a list.", "Trả về.", flags=()))])
+    assert loaded.stored == 1
+    assert loaded.dropped == 1
+    assert [s.msgid for s in memory] == ["Return a list."]
+
+
+def test_load_human_leaves_machine_segments_where_they_are() -> None:
+    """A machine segment is the one thing here that cannot be rebuilt without
+    spending the run again, and the mirror is no evidence either way about it."""
+    memory = Memory([sync.Segment(id="0" * 16, msgid="x", msgstr="y", source="machine")])
+    loaded = sync.load_human(memory, [catalog_of(entry("Return a list.", "Trả về.", flags=()))])
+    assert loaded.dropped == 0
+    assert {s.source for s in memory} == {"machine", "human"}
 
 
 def test_diff_reports_orphans(data_dir: Path) -> None:
