@@ -154,9 +154,32 @@ def l02_not_the_source(corpus: Corpus) -> Iterator[Finding]:
     what they are for. Everything else that is identical is either a model
     refusing the work or a classifier that should have called it passthrough,
     and both are worth a line in the report.
+
+    An entry whose whole ``msgid`` is a term the glossary keeps in English is
+    exempt too, and that exemption is the reason the glossary has a ``keep_en``
+    field at all. Narrowing the identifier rule put 6 558 single-word entries
+    into :meth:`Corpus.prose` for the first time and took this check from 10
+    findings to 144. A third of them were entries reading ``sys``, ``builtins``,
+    ``import``, ``exec``, ``NaN`` and ``Infinity``, all of which are index
+    entries naming a module or a statement, and all of which a reviewer left in
+    English because that is what a Vietnamese programmer calls them.
+
+    Nothing in the string can tell those from ``module``, ``object`` and
+    ``type``, which are the other 89 and are ordinary English words used as
+    index categories. ``sys`` and ``Notes`` are the same shape, and that is the
+    discrimination the classifier was narrowed for being unable to make. So it
+    is made once, by hand, in the glossary, where it is a written decision that
+    ``G03`` then checks in both directions rather than an exception buried here.
+
+    Matched on the whole ``msgid`` and not on a substring. A kept term inside a
+    sentence says nothing about whether the sentence was translated, and this
+    check is about the entry.
     """
+    kept = {term.en for term in corpus.glossary.kept} if corpus.glossary is not None else set()
     for one, entry in corpus.translated():
         if classify.classify(entry.msgid) in PASSTHROUGH:
+            continue
+        if entry.msgid.strip() in kept:
             continue
         if entry.msgstr.strip() == entry.msgid.strip():
             yield Finding(

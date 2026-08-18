@@ -5,13 +5,23 @@ A soft rule here is one a correct translation can break, and the tests below say
 which correct translations those are.
 """
 
+from dataclasses import replace
+
 from conftest import catalog_of, corpus_of, entry, findings, machine_segment
 from pydocvi.audit import language
+from pydocvi.audit.model import Corpus
+from pydocvi.glossary import Glossary, Term
 from pydocvi.memory import Memory
 
 
 def over(msgid: str, msgstr: str, **overrides: object) -> object:
     return corpus_of(catalog_of(entry(msgid, msgstr, **overrides)))
+
+
+def with_kept(corpus: object, *english: str) -> Corpus:
+    """The same corpus with a glossary that keeps these terms in English."""
+    terms = tuple(Term(en=one, vi=one, keep_en=True) for one in english)
+    return replace(corpus, glossary=Glossary(version=1, terms=terms))  # type: ignore[type-var]
 
 
 class TestL01:
@@ -50,6 +60,31 @@ class TestL02:
             findings(language.l02_not_the_source, over("Return a list.", "Trả về một danh sách."))
             == []
         )
+
+    def test_an_entry_that_is_a_kept_term_is_the_glossary_s_business(self) -> None:
+        """``sys`` is an index entry naming a module and a reviewer left it in
+        English because that is what a Vietnamese programmer calls it. Nothing
+        in the string separates it from ``Notes``, so the decision is made once
+        in the glossary and ``G03`` checks it in both directions."""
+        corpus = over("sys", "sys", flags=())
+        assert len(findings(language.l02_not_the_source, corpus)) == 1
+        assert findings(language.l02_not_the_source, with_kept(corpus, "sys")) == []
+
+    def test_a_kept_term_inside_a_sentence_exempts_nothing(self) -> None:
+        """Matched on the whole ``msgid``. A kept term in a sentence says
+        nothing about whether the sentence was translated."""
+        english = "Import the sys module first."
+        corpus = with_kept(over(english, english), "sys")
+        assert len(findings(language.l02_not_the_source, corpus)) == 1
+
+    def test_a_word_the_glossary_does_not_keep_is_still_reported(self) -> None:
+        """``module`` is the other side of the same 144 findings, an ordinary
+        English word used as an index category, and it wants translating."""
+        corpus = with_kept(over("module", "module", flags=()), "sys")
+        assert len(findings(language.l02_not_the_source, corpus)) == 1
+
+    def test_no_glossary_means_no_exemption_rather_than_a_crash(self) -> None:
+        assert len(findings(language.l02_not_the_source, over("sys", "sys", flags=()))) == 1
 
 
 class TestL03:
