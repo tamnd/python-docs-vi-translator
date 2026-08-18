@@ -38,6 +38,13 @@ pydocvi = "pydocvi.cli:main"
 
 [dependency-groups]
 dev = [
+    # Not used by the package, and here because it is what Sphinx reads these
+    # files with. polib is more forgiving than Babel, so a test that reads our
+    # own output back with our own reader agrees with itself and proves nothing:
+    # it passed the whole time the corpus was shipping a PO-Revision-Date that
+    # made Sphinx skip every catalog. The consumer's parser is the only one whose
+    # opinion decides whether the site has any Vietnamese on it.
+    "babel>=2.16",
     "pytest>=8.3",
     "pytest-cov>=6",
     "pytest-asyncio>=0.25",

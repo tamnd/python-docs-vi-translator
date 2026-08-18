@@ -19,6 +19,7 @@ strings 3.14 and 3.15 share are the same segments in a different arrangement.
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydocvi import __version__, catalog, classify
@@ -67,6 +68,44 @@ MARKER = "# pydocvi:"
 PASSTHROUGH_FIELD = "passthrough="
 
 
+#: How this tool stamps a run, everywhere a run is named: in the queue, in the
+#: ``run=`` field of a provenance comment, and in the memory.
+RUN_DATE = "%Y-%m-%dT%H:%MZ"
+
+#: How the PO header is defined to write a date, which is not ISO 8601 and is
+#: the whole reason :func:`po_date` exists.
+PO_DATE = "%Y-%m-%d %H:%M%z"
+
+
+def po_date(when: str) -> str:
+    """A run stamp in the format ``PO-Revision-Date`` is defined to use.
+
+    The two are not the same and the difference is not cosmetic. A run is
+    stamped ``2026-08-18T03:55Z`` because that is what a run is called
+    everywhere else in this tool, and the PO header wants ``2026-08-18
+    03:55+0000``. Babel's reader raises on the ``T`` and the ``Z``, Sphinx
+    catches that as a reading error and skips writing the ``.mo`` for that
+    catalog, and every page in it then renders in English.
+
+    Nothing anywhere reports this. Not Sphinx, which logs a warning among
+    thousands and carries on; not the build, which succeeds; not the coverage
+    table, which counts the .po files and is entirely right about them. The
+    published site simply loses every translation it has. That is what happened
+    to all 548 catalogs and all 1 437 reviewed strings on the first deploy after
+    ``apply`` started writing headers, and the only way anybody found out was
+    reading the rendered HTML.
+
+    A date already in the right shape is handed back untouched, so a date
+    written by Transifex survives a round trip through ``apply`` unchanged and
+    only the ones this tool got wrong are rewritten.
+    """
+    try:
+        parsed = datetime.strptime(when, RUN_DATE).replace(tzinfo=UTC)
+    except ValueError:
+        return when
+    return parsed.strftime(PO_DATE)
+
+
 class ApplyError(ValueError):
     """The catalogs and the memory disagree in a way writing cannot resolve."""
 
@@ -93,7 +132,7 @@ class Stamp:
     @property
     def revised(self) -> str:
         """The header's ``PO-Revision-Date``, which defaults to the run."""
-        return self.revision or self.run
+        return po_date(self.revision or self.run)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

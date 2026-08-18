@@ -308,9 +308,38 @@ class TestTheHeader:
         assert out.metadata["Last-Translator"] == "pydocvi (machine translation, unreviewed)"
 
     def test_the_project_and_the_date_come_from_the_stamp(self) -> None:
+        """The date is the run, rewritten into the format the PO header is
+        defined to use. This asserted the run verbatim until August 2026, which
+        is how a corpus shipped with an ISO date in a field that is not ISO."""
         out = applied(upstream(block("Dealing with Bugs")), Memory())
         assert out.metadata["Project-Id-Version"] == "Python 3.15"
-        assert out.metadata["PO-Revision-Date"] == "2026-08-17T09:30Z"
+        assert out.metadata["PO-Revision-Date"] == "2026-08-17 09:30+0000"
+
+    def test_a_date_already_in_the_right_shape_is_left_alone(self) -> None:
+        """So a date written by Transifex survives a round trip through apply,
+        and only the ones this tool got wrong are rewritten."""
+        stamp = Stamp(
+            project="Python 3.15", run="2026-08-17T09:30Z", revision="2025-09-16 00:00+0000"
+        )
+        out = apply.header(upstream(block("Dealing with Bugs")), stamp)
+        assert out.metadata["PO-Revision-Date"] == "2025-09-16 00:00+0000"
+
+    def test_sphinx_can_read_the_file_back(self) -> None:
+        """The one that matters, and it has to use Babel rather than polib.
+
+        polib reads our ISO date without complaint, so every test we had agreed
+        with itself while Sphinx was refusing the whole catalog. Babel is what
+        Sphinx reads with: it raises on the date, Sphinx logs one warning among
+        thousands and skips writing the .mo, the build succeeds, and the
+        published page comes out in English. 548 catalogs and 1 437 reviewed
+        strings went out that way.
+        """
+        from io import StringIO
+
+        from babel.messages.pofile import read_po
+
+        out = applied(upstream(block("Dealing with Bugs")), Memory())
+        assert read_po(StringIO(catalog.render(out)), locale="vi").revision_date is not None
 
     def test_vietnamese_gets_one_plural_form(self) -> None:
         out = applied(upstream(block("Dealing with Bugs")), Memory())
