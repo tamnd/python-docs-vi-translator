@@ -434,12 +434,27 @@ def apply_command(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Print what would change and write nothing.")
     ] = False,
+    refuzzy: Annotated[
+        bool,
+        typer.Option(
+            "--refuzzy",
+            help="Treat an unmarked translation in the corpus as unreviewed, not as a reviewer's.",
+        ),
+    ] = False,
 ) -> None:
     """Write the memory onto the catalogs, or check that it already is.
 
     ``--check`` is the one CI runs. It renders every file from the same memory
     and compares bytes, so a hand edit on the content repo fails the build by
     name rather than being reverted by the next run and mentioned in a log.
+
+    ``--refuzzy`` is for a corpus that came from somewhere else. An unfuzzied
+    entry normally means a reviewer signed off, and it is protected for the days
+    the Transifex round trip takes; this repository inherited 241 entries an
+    earlier script wrote without marking, which look identical. The flag says to
+    believe the memory over the file where the two disagree, and it never touches
+    an entry the memory records as ``human``, so it is not the bulk unfuzzy
+    command spec 02 §4 refuses to have. It is meant to be run once.
     """
     where = config.paths()
     memory = Memory.load(where.memory)
@@ -447,15 +462,16 @@ def apply_command(
     stamp = apply.Stamp(
         project=f"Python {branch}",
         run=time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime()),
-        generator=f"pydocvi {__version__}",
     )
     run = apply.check if check else apply.plan
-    result = run(sources, memory, root=where.upstream, into=where.content, stamp=stamp)
+    result = run(
+        sources, memory, root=where.upstream, into=where.content, stamp=stamp, refuzzy=refuzzy
+    )
 
     counts = result.counts
     console.print(
         f"{counts.written:,} written   {counts.kept:,} left to the reviewer   "
-        f"{counts.untranslated:,} still English"
+        f"{counts.copied:,} copied through   {counts.untranslated:,} still English"
     )
     for one in result.changed:
         console.print(f"  {one.path.relative_to(where.content)}")

@@ -130,6 +130,59 @@ class TestWritingATranslation:
         assert entry_of(applied(cat, Memory()), "Dealing with Bugs").msgstr == ""
 
 
+class TestCopyingANoOp:
+    """Entries no model is ever asked about, which is 13 900 of the corpus.
+
+    Nothing was writing them. ``batch`` drops everything that is not prose before
+    a call is queued, no command mints a segment for one, and the result was
+    13 900 entries sitting as English with no record of why, which is
+    indistinguishable from 13 900 entries nobody has reached yet.
+    """
+
+    def test_a_doctest_is_copied_from_the_msgid(self) -> None:
+        cat = upstream(block(">>> len([1, 2, 3])"))
+        entry = entry_of(applied(cat, Memory()), ">>> len([1, 2, 3])")
+        assert entry.msgstr == ">>> len([1, 2, 3])"
+
+    def test_it_says_what_the_classifier_thought_it_was(self) -> None:
+        """The only durable record of the decision, and the claim ``L04`` goes
+        looking for false positives in."""
+        cat = upstream(block(">>> len([1, 2, 3])"))
+        entry = entry_of(applied(cat, Memory()), ">>> len([1, 2, 3])")
+        assert entry.comments[-1] == "# pydocvi: passthrough=doctest"
+
+    def test_it_lands_fuzzy_like_everything_else_this_tool_writes(self) -> None:
+        """It costs a copied string nothing, since the English Sphinx falls back
+        to is the same bytes as the msgstr, and it keeps S04 to one sentence."""
+        cat = upstream(block(">>> len([1, 2, 3])"))
+        assert entry_of(applied(cat, Memory()), ">>> len([1, 2, 3])").fuzzy
+
+    def test_prose_the_memory_has_nothing_for_is_still_left_alone(self) -> None:
+        """The rule is about no-ops. An English sentence nobody has translated
+        stays an empty msgstr, because copying it through would report the whole
+        untranslated corpus as handled."""
+        cat = upstream(block("Dealing with Bugs"))
+        entry = entry_of(applied(cat, Memory()), "Dealing with Bugs")
+        assert entry.msgstr == ""
+        assert not any(line.startswith("# pydocvi:") for line in entry.comments)
+
+    def test_the_memory_still_wins_over_the_copy(self) -> None:
+        """A person who translated a version marker did so for a reason, and the
+        classifier's opinion does not outrank a segment."""
+        cat = upstream(block("Added in version 3.9."))
+        memory = Memory([machine("Added in version 3.9.", "Thêm vào phiên bản 3.9.")])
+        entry = entry_of(applied(cat, memory), "Added in version 3.9.")
+        assert entry.msgstr == "Thêm vào phiên bản 3.9."
+
+    def test_a_copy_is_not_counted_as_work_done(self) -> None:
+        """Spec 12 §5: a no-op is neither translated nor outstanding. Folding
+        13 900 of them into the written column would report a doctest copied
+        verbatim as a translation."""
+        cat = upstream(block(">>> len([1, 2, 3])"), block("Dealing with Bugs"))
+        counts = apply.apply_catalog(cat, None, Memory(), stamp=STAMP)[1]
+        assert (counts.copied, counts.written, counts.untranslated) == (1, 0, 1)
+
+
 class TestPrecedence:
     def test_a_machine_string_never_lands_on_a_reviewed_one(self) -> None:
         """The whole point of the review pass. A reviewer who unfuzzies a string
@@ -160,6 +213,62 @@ class TestPrecedence:
         out, counts = apply.apply_catalog(source, existing, memory, stamp=STAMP)
         assert entry_of(out, "Dealing with Bugs").msgstr == "Bản mới"
         assert counts.written == 1
+
+
+class TestRefuzzy:
+    """The one way past the guard, for a corpus that came from somewhere else.
+
+    This repository inherited 241 entries the 2026 ``scripts/mt.py`` run wrote
+    without a fuzzy flag and without a comment, which is byte for byte the shape
+    of a reviewer's sign-off. ``apply`` was protecting them as somebody's work,
+    which is the single thing the corpus must never claim about a machine string.
+    """
+
+    def test_an_unmarked_entry_the_memory_calls_machine_is_overwritten(self) -> None:
+        source = upstream(block("Dealing with Bugs"))
+        existing = upstream(block("Dealing with Bugs", "Bản Google cũ"))
+        memory = Memory([machine("Dealing with Bugs", "Bản dịch máy mới")])
+        out, counts = apply.apply_catalog(source, existing, memory, stamp=STAMP, refuzzy=True)
+        entry = entry_of(out, "Dealing with Bugs")
+        assert entry.msgstr == "Bản dịch máy mới"
+        assert entry.fuzzy
+        assert (counts.written, counts.kept) == (1, 0)
+
+    def test_a_reviewed_entry_comes_through_untouched_anyway(self) -> None:
+        """What keeps this from being the bulk unfuzzy command spec 02 §4
+        refuses to have. The flag believes the memory, and the memory says a
+        person wrote this one."""
+        source = upstream(block("Dealing with Bugs"))
+        existing = upstream(block("Dealing with Bugs", "Xử lý lỗi đã duyệt"))
+        memory = Memory(
+            [
+                Segment.from_entry(
+                    Entry(msgid="Dealing with Bugs", msgstr="Xử lý lỗi đã duyệt"), source="human"
+                )
+            ]
+        )
+        out, counts = apply.apply_catalog(source, existing, memory, stamp=STAMP, refuzzy=True)
+        assert entry_of(out, "Dealing with Bugs").raw == entry_of(existing, "Dealing with Bugs").raw
+        assert counts.kept == 1
+
+    def test_it_is_off_unless_asked_for(self) -> None:
+        """An unfuzzied entry is a reviewer's mark for the days the Transifex
+        round trip takes, and the default has to keep believing that."""
+        source = upstream(block("Dealing with Bugs"))
+        existing = upstream(block("Dealing with Bugs", "Bản Google cũ"))
+        memory = Memory([machine("Dealing with Bugs", "Bản dịch máy mới")])
+        out, _ = apply.apply_catalog(source, existing, memory, stamp=STAMP)
+        assert entry_of(out, "Dealing with Bugs").msgstr == "Bản Google cũ"
+
+    def test_an_unmarked_no_op_the_memory_never_saw_becomes_a_copy(self) -> None:
+        """The other half of the inherited corpus: 101 code entries the old
+        script copied through and left looking reviewed."""
+        source = upstream(block(">>> len([1, 2, 3])"))
+        existing = upstream(block(">>> len([1, 2, 3])", ">>> len([1, 2, 3])"))
+        out, counts = apply.apply_catalog(source, existing, Memory(), stamp=STAMP, refuzzy=True)
+        entry = entry_of(out, ">>> len([1, 2, 3])")
+        assert entry.comments[-1] == "# pydocvi: passthrough=doctest"
+        assert counts.copied == 1
 
 
 class TestWhatUpstreamOwns:

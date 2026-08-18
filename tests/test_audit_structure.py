@@ -10,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from conftest import catalog_of, corpus_of, entry, findings, machine_segment, upstream_of
+from pydocvi import apply, audit, catalog, config
 from pydocvi.audit import structure
 from pydocvi.catalog import Entry
 from pydocvi.memory import Memory, Segment
@@ -25,6 +26,11 @@ PIN = Pin(
     characters=14,
     translated=1,
 )
+
+
+def _stamp(run: str) -> apply.Stamp:
+    """A stamp with no generator named, which is how the package builds them."""
+    return apply.Stamp(project="Python 3.15", run=run)
 
 
 def written(where: Path, pin: Pin) -> Path:
@@ -225,3 +231,54 @@ class TestS08:
         that guessed would report every file in the repository."""
         here = catalog_of(entry("Return a list.", "Trả về một danh sách."))
         assert findings(structure.s08_apply_is_byte_identical, corpus_of(here)) == []
+
+    def test_a_corpus_apply_just_wrote_is_byte_identical(self, tmp_path: Path) -> None:
+        """A file this check has just watched ``apply`` write is not a finding.
+
+        The round trip rather than a hand-built pair, because both sides of this
+        comparison are the same renderer and the only way to be wrong is to feed
+        it something the writer would not have fed it.
+        """
+        upstream, content = tmp_path / "upstream", tmp_path / "content"
+        upstream.mkdir()
+        source = upstream / "tutorial.po"
+        source.write_text(
+            'msgid ""\nmsgstr ""\n"Language: vi\\n"\n\nmsgid "Return a list."\nmsgstr ""\n',
+            "utf-8",
+        )
+        memory = Memory()
+        memory.add(machine_segment("Return a list.", "Trả về một danh sách."))
+        apply.write(
+            apply.plan(
+                [source], memory, root=upstream, into=content, stamp=_stamp("2026-08-17T09:30Z")
+            )
+        )
+
+        # A later run of the audit, on a different day, against the same corpus.
+        # The revision date comes back off the file, so only a real difference
+        # in content can show up here.
+        corpus = corpus_of(
+            catalog.read(content / "tutorial.po"),
+            root=content,
+            upstream=upstream_of(catalog.read(source), root=upstream),
+            upstream_root=upstream,
+            memory=memory,
+            stamp=_stamp("2026-11-02T18:04Z"),
+        )
+        assert findings(structure.s08_apply_is_byte_identical, corpus) == []
+
+    def test_the_audit_renders_as_the_writer_not_as_the_audit(self, tmp_path: Path) -> None:
+        """The stamp a real audit run builds names ``apply``'s generator.
+
+        This is the one that catches the bug the round trip above cannot. The
+        audit named itself in the ``X-Generator`` header it was comparing, so
+        every catalog differed on that line and on nothing else, and ``S08``
+        reported all 548 files changed in the same minute ``apply --check``
+        called the tree clean. A test that builds both sides of the comparison
+        agrees with itself whatever the audit does, so this asks the audit.
+        """
+        for name in ("upstream", "content"):
+            (tmp_path / name).mkdir()
+        corpus = audit.assemble(config.paths())
+        assert corpus.stamp is not None
+        assert corpus.stamp.generator == apply.GENERATOR

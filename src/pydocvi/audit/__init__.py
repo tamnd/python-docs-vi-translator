@@ -91,10 +91,14 @@ def assemble(where: config.Paths, *, branch: str = sync.DEFAULT_BRANCH) -> Corpu
         queue=where.queue if where.queue.exists() else None,
         pin=where.upstream_pin,
         upstream_root=where.upstream,
+        # The same stamp ``apply`` writes with, generator included. ``S08``
+        # renders the corpus and requires byte identity, so a stamp that names
+        # the audit reports all 548 files differing on the ``X-Generator`` line
+        # and nothing else. It did, in the same minute ``apply --check`` called
+        # the tree clean.
         stamp=apply.Stamp(
             project=f"Python {branch}",
             run=time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime()),
-            generator="pydocvi audit",
         ),
     )
 

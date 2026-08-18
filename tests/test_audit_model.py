@@ -152,6 +152,23 @@ class TestCorpus:
         one = catalog_of(entry("Done.", "Xong."), entry("Not yet."))
         assert [e.msgid for _, e in corpus_of(one).translated()] == ["Done."]
 
+    def test_prose_skips_the_entries_no_model_was_ever_asked_about(self) -> None:
+        """A copied doctest has a ``msgstr`` because copying it is what it is
+        for. Judging it as a translation is how ``G02`` went from 321 findings
+        to 2 836 the day ``apply`` started minting the copies, without a single
+        translation changing."""
+        code = ">>> sorted(d.keys())"
+        one = catalog_of(entry("Return a list.", "Trả về một danh sách."), entry(code, code))
+        assert [e.msgid for _, e in corpus_of(one).prose()] == ["Return a list."]
+
+    def test_prose_asks_the_classifier_and_not_the_marker(self) -> None:
+        """``L04``'s whole job is to find where the two have drifted apart, so a
+        check that trusted the marker here would go blind on exactly the entries
+        that are mislabelled."""
+        code = ">>> len([1, 2, 3])"
+        lying = entry(code, code).with_comments(["# pydocvi: passthrough=prose"])
+        assert list(corpus_of(catalog_of(lying)).prose()) == []
+
     def test_relative_is_the_path_a_reviewer_would_type(self) -> None:
         root = Path("/corpus")
         one = catalog_of(entry("a", "b"), name="library/os.po", root=root)
