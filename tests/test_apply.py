@@ -188,22 +188,32 @@ class TestCopyingANoOp:
         assert entry.msgstr == code
         assert entry.comments[-1] == "# pydocvi: passthrough=literal_block"
 
-    def test_refusing_it_does_not_reach_past_the_reviewer(self) -> None:
-        """The human guard comes first, so this cannot quietly replace a reviewed
-        string with the English. ``--refuzzy`` is the only way past it, here as
-        everywhere else in this module."""
+    def test_the_copy_reaches_past_the_reviewer_too(self) -> None:
+        """This assertion was the other way round first, on the reasoning that a
+        reviewer's mark outranks everything. One classifier change was enough to
+        show what that costs: four segments left the memory, five entries stayed
+        in the corpus translated and not fuzzy with nothing behind them, and
+        ``S04`` reported all five and had no way to be cleared.
+
+        The guard exists to stop a machine translation landing on a person's
+        work. The ``msgid`` is not a machine translation, it is the source text,
+        and ``P07`` requires the entry to hold it byte for byte."""
         code = ">>> n  # try it\nNameError"
         source = upstream(block(code.replace("\n", "\\n")))
         existing = upstream(block(code.replace("\n", "\\n"), "đã duyệt"))
         out = apply.apply_catalog(source, existing, Memory(), stamp=STAMP)[0]
-        assert entry_of(out, code).msgstr == "đã duyệt"
+        entry = entry_of(out, code)
+        assert entry.msgstr == code
+        assert entry.comments[-1] == "# pydocvi: passthrough=doctest"
 
-    def test_refuzzy_reaches_it(self) -> None:
-        code = ">>> n  # try it\nNameError"
-        source = upstream(block(code.replace("\n", "\\n")))
-        existing = upstream(block(code.replace("\n", "\\n"), "đã duyệt"))
-        out = apply.apply_catalog(source, existing, Memory(), stamp=STAMP, refuzzy=True)[0]
-        assert entry_of(out, code).msgstr == code
+    def test_a_reviewed_prose_string_is_still_untouchable(self) -> None:
+        """What the reordering did not change, and the reason to write it down
+        next to what it did. The guard is where it always was for everything that
+        is not code, which is 81 964 of the 87 008 entries."""
+        source = upstream(block("Return a sorted list."))
+        existing = upstream(block("Return a sorted list.", "Trả về một danh sách."))
+        out = apply.apply_catalog(source, existing, Memory(), stamp=STAMP)[0]
+        assert entry_of(out, "Return a sorted list.").msgstr == "Trả về một danh sách."
 
     def test_a_copy_is_not_counted_as_work_done(self) -> None:
         """Spec 12 §5: a no-op is neither translated nor outstanding. Folding

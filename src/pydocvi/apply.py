@@ -269,8 +269,8 @@ def apply_entry(
     pipeline failing until the memory caught up with the catalog. What matters is
     that no machine string ever lands on top of a human one, and none does.
 
-    A code entry is copied whatever the memory holds for it, which is a rule
-    about the memory being wrong rather than empty. ``P07`` says a doctest is
+    A code entry is copied before any of that is asked, whatever the memory
+    holds for it and whatever the file holds for it. ``P07`` says a doctest is
     byte-identical to its ``msgid``, and until this clause existed the only thing
     standing behind that was nothing having queued one: :func:`batch` filters
     non-prose out, so a segment for a code entry could only come from a run made
@@ -281,14 +281,30 @@ def apply_entry(
 
     Refusing it here rather than pruning the memory is what makes the guarantee
     hold going forward. The classifier will get stricter again, that is the
-    direction it has moved twice, and each time it does the memory acquires
-    another handful of translations of things that turned out to be code. What
-    they are worth is decided by what the string is now, not by what some earlier
-    run thought when it asked.
+    direction it has moved three times now, and each time it does both the memory
+    and the corpus acquire another handful of translations of things that turned
+    out to be code. What they are worth is decided by what the string is now, not
+    by what some earlier run thought when it asked.
 
-    The human guard still comes first, so this cannot quietly replace a reviewed
-    string with the English. Getting past that is ``--refuzzy`` and nothing else,
-    which is the same answer as everywhere else in this module.
+    Which is why the copy is asked before the human guard and not after it. It
+    was after it first, on the reasoning that a reviewer's mark outranks
+    everything, and one classifier change was enough to show what that costs. The
+    block rule learned to read ``def f(pos1, pos2, /, pos_or_kwd, *, kwd1,
+    kwd2):``, four segments left the memory because a person's copy of a line of
+    code is not a translation of it, and the five entries in the corpus stayed
+    exactly where they were: translated, not fuzzy, and now accounted for by
+    nothing. ``S04`` reported all five, correctly, because that is what an
+    unmarked non-fuzzy string is. The guard was holding a string in place that no
+    longer had anything behind it.
+
+    The guard exists to stop a machine translation landing on a person's work.
+    Copying the ``msgid`` is not a machine translation, it is the source text,
+    and ``P07`` requires it. So the guard is not engaged here and putting it
+    first only meant that a writer could leave its own checker with findings it
+    had no way to clear. Measured before the swap: 5 entries in the corpus are
+    human-marked and classified as code, and all 5 already hold the ``msgid``
+    byte for byte. The reordering changes no translated text at all, and adds
+    five provenance comments saying where the text came from.
 
     An entry the memory has nothing for is either prose nobody has translated
     yet, which is left as upstream had it, or a no-op, which is copied through
@@ -304,10 +320,10 @@ def apply_entry(
     ``refuzzy`` is the one way to get past that guard, and it is off by default.
     See :func:`_contradicted` for what it does and why it exists.
     """
-    if existing is not None and is_human(existing) and not _contradicted(segment, refuzzy):
-        return existing
     if classify.classify(upstream.msgid).code:
         return _copied(upstream)
+    if existing is not None and is_human(existing) and not _contradicted(segment, refuzzy):
+        return existing
     if segment is None or not segment.msgstr:
         return _copied(upstream) if not _translatable(upstream) else _untranslated(upstream)
     if segment.source == "human":
