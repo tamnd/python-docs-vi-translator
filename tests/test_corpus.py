@@ -35,7 +35,11 @@ EXPECTED_HUMAN = 1_435
 #: Two constants where there was one, on purpose. The mirror's count is a fact
 #: about the mirror and this is a decision this tool makes, and folding them
 #: back together would hide the next change to either.
-EXPECTED_HUMAN_SEGMENTS = 1_299
+#: 1 299 until the block rule learned to read an opener, a trailing comment and
+#: a call holding quoted strings. The five it lost are the five ``L01`` was
+#: reporting: ``def f(pos1, pos2, /, pos_or_kwd, *, kwd1, kwd2):`` and the rest,
+#: translated by being copied, because copying was the correct answer.
+EXPECTED_HUMAN_SEGMENTS = 1_294
 
 #: Re-measured after the identifier rule was narrowed to need a dot, an
 #: underscore or a digit. 3 193 entries left ``version_marker``: 3 164 to prose
@@ -49,14 +53,18 @@ EXPECTED_HUMAN_SEGMENTS = 1_299
 #: as needing no translation. The classifier decides what a run costs and what
 #: it never looks at, and both are silent from any other angle, which is why
 #: these numbers are written down.
+#: Re-measured again for the three block shapes the rule was missing. 67 entries
+#: left prose, which is a cheap direction: they are code, they were being sent
+#: to a model, and the model was returning them unchanged and being refused for
+#: it. One batch fewer on a full run.
 EXPECTED_KINDS = {
-    "prose": 75_660,
+    "prose": 75_593,
     "noop": 5_721,
     "doctest": 2_121,
-    "literal_block": 2_856,
+    "literal_block": 2_923,
     "version_marker": 650,
 }
-EXPECTED_BATCHES = 2_802
+EXPECTED_BATCHES = 2_801
 EXPECTED_CHANGELOG_BATCHES = 576
 EXPECTED_OVERSIZED = 6
 EXPECTED_LARGEST_ENTRY = 12_707

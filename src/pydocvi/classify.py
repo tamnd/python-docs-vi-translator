@@ -60,6 +60,35 @@ _INVOCATION = re.compile(
 _PATH = re.compile(r"^[\w.~-]+(?:[/\\][\w.~-]+)+$")
 _TIGHT = re.compile(r"^(?:[\w.]+\(.*\)|[\[{].*[\]}])$")
 
+#: A line that opens an indented block, for the blocks whose body is not in the
+#: entry. ``def f(pos1, pos2, /, pos_or_kwd, *, kwd1, kwd2):`` is a whole entry
+#: in ``tutorial/controlflow.po`` and ``case (Point(x1, y1), Point(x2, y2) as
+#: p2): ...`` is another, both quoted for their signature with the body left off,
+#: so there is no second line to be indented and no call to recognise.
+#:
+#: The keyword list stops where English starts. ``if``, ``for``, ``while``,
+#: ``with`` and ``else`` are the other block openers and all five are ordinary
+#: words, and a colon is how the documentation introduces a list. Adding them
+#: reaches four more entries and two of them are sentences: ``while a positional
+#: argument could be created like::`` and ``if it is 3, implements::``. That is
+#: the failure named at the top of this module, so the wide list was measured,
+#: read and dropped. ``def``, ``class``, ``case``, ``match``, ``elif``,
+#: ``except``, ``finally`` and ``try`` open no English sentence in this corpus.
+_OPENER = re.compile(
+    r"^(?:async\s+)?(?:def|class|case|match|elif|except|finally|try)\b.*:(?:\s*\.\.\.)?$"
+)
+
+#: An inline comment on the end of a line of code, and the code in front of it.
+#:
+#: Two spaces, which is how PEP 8 says to write one and how every one of these
+#: in the corpus is written. One space would reach two more entries and read a
+#: hash anywhere in a sentence as the start of a comment, and the hash is a
+#: heading marker in more than one markup language.
+_COMMENTED = re.compile(r"^(.*?\S)\s{2,}#")
+
+#: A quoted string, whose insides are data and not prose.
+_QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
+
 #: A terminal prompt, with the virtualenv name some transcripts put in front of
 #: it. One of these anywhere in an entry makes the whole entry a transcript,
 #: because the lines around a prompt are the output of the command in it.
@@ -200,6 +229,21 @@ def is_literal_block(msgid: str) -> bool:
     So a line that looks like code counts as well, and an entry counts when
     every line of it does. That adds 738 entries over the whole corpus, 0.85 per
     cent, and two random samples of them read as code with no prose in either.
+
+    Three shapes of code were still missing from that, all found by reading
+    ``L01``, the check that reports an entry whose translation is its source. A
+    block opener quoted without its body has no second line to indent and no
+    call to recognise: ``def f(pos1, pos2, /, pos_or_kwd, *, kwd1, kwd2):``. A
+    line with a comment on the end is code plus English, and the English hid the
+    code: ``parrot(1000)  # 1 positional argument``. And a call whose arguments
+    are quoted strings has spaces inside the quotes, which the spacing rule was
+    counting as prose: ``parrot('a million', 'bereft of life', 'jump')``.
+
+    Together they move 67 entries, and 67 is a number small enough to read one
+    by one, which is what happened: no prose among them. Five of the 67 are
+    entries somebody had already translated, and all five are what ``L01`` was
+    reporting, translations identical to their source because there was nothing
+    to translate. The classifier now says so before a model is asked.
     """
     lines = [line for line in msgid.split("\n") if line.strip()]
     if not lines:
@@ -212,12 +256,30 @@ def is_literal_block(msgid: str) -> bool:
 
 
 def _is_code(line: str) -> bool:
-    """Whether one stripped line is code rather than a sentence."""
+    """Whether one stripped line is code rather than a sentence.
+
+    Asked twice where there is a comment on the end, once of the whole line and
+    once of the code in front of the hash. ``parrot('a million', 'bereft of
+    life', 'jump')  # 3 positional arguments`` is a call, and none of the rules
+    below can see that while the English on the end is still attached.
+    """
+    return _shaped(line) or _shaped(_uncommented(line))
+
+
+def _uncommented(line: str) -> str:
+    """The code in front of an inline comment, or the line if it has none."""
+    found = _COMMENTED.match(line)
+    return found.group(1) if found else line
+
+
+def _shaped(line: str) -> bool:
+    """Whether the line is code, taken as it is written."""
     return bool(
         _SHEBANG.match(line)
         or _IMPORT.match(line)
         or _ASSIGNMENT.match(line)
         or _INVOCATION.match(line)
+        or _OPENER.match(line)
         or _PATH.match(line)
         or _tight(line)
     )
@@ -232,10 +294,17 @@ def _tight(line: str) -> bool:
     version of this rule sent both of them to passthrough. The thing that
     separates them is spacing: code puts a space after a comma and nowhere
     else, and English puts one between every pair of words.
+
+    Which is true of code, and not of the strings inside it. ``parrot('a
+    million', 'bereft of life', 'jump')`` is a call whose arguments are English,
+    and counting the spaces in them read it as a sentence. So the quoted spans
+    are masked before the spacing is counted. What is inside them is data, and
+    this rule has no opinion about data.
     """
     if not _TIGHT.match(line):
         return False
-    return all(line[i - 1] == "," for i, char in enumerate(line) if char == " " and i)
+    masked = _QUOTED.sub(lambda found: "_" * len(found.group(0)), line)
+    return all(masked[i - 1] == "," for i, char in enumerate(masked) if char == " " and i)
 
 
 def is_version_marker(msgid: str) -> bool:

@@ -149,6 +149,95 @@ class TestCodeWithNoIndent:
         assert classify.is_literal_block(msgid)
 
 
+class TestBlockOpeners:
+    """A signature quoted without the body it opens.
+
+    There is no second line to be indented, no assignment and no call, so every
+    rule above this one reads them as a sentence ending in a colon.
+    """
+
+    @pytest.mark.parametrize(
+        "msgid",
+        [
+            "def f(pos1, pos2, /, pos_or_kwd, *, kwd1, kwd2):",
+            "case (Point(x1, y1), Point(x2, y2) as p2): ...",
+            "class Bag[T]: ...",
+            "def func[T](arg: T): ...",
+            "async def f():",
+            "match command.split():",
+            "except* TypeError:",
+        ],
+    )
+    def test_an_opener_with_no_body(self, msgid: str) -> None:
+        assert classify.classify(msgid) is Kind.LITERAL_BLOCK
+
+    @pytest.mark.parametrize(
+        "msgid",
+        [
+            "while a positional argument could be created like::",
+            "if it is 3, implements::",
+            "for example, the following two calls are equivalent::",
+            "with the following result:",
+            "else, the value is returned unchanged:",
+        ],
+    )
+    def test_the_keywords_that_are_also_english(self, msgid: str) -> None:
+        """The list stops where English starts, and this is why. Adding ``if``,
+        ``for``, ``while``, ``with`` and ``else`` reaches four more entries and
+        two of these sentences, and a colon is how the documentation introduces
+        a list."""
+        assert not classify.is_literal_block(msgid)
+        assert classify.classify(msgid).translatable
+
+    def test_a_word_that_merely_starts_with_a_keyword(self) -> None:
+        """``\\b`` after the keyword, not before the rest of the line."""
+        assert not classify.is_literal_block("classes and their attributes:")
+
+
+class TestTrailingComments:
+    """Code with English on the end of it, which is most of a tutorial."""
+
+    @pytest.mark.parametrize(
+        "msgid",
+        [
+            "parrot(1000)                                          # 1 positional argument",
+            "parrot(voltage=1000)                                  # 1 keyword argument",
+            "parrot()                     # required argument missing",
+            "parrot(actor='John Cleese')  # unknown keyword argument",
+            "from . import echo  # relative import",
+        ],
+    )
+    def test_a_comment_does_not_hide_the_code(self, msgid: str) -> None:
+        assert classify.classify(msgid) is Kind.LITERAL_BLOCK
+
+    def test_two_spaces_before_the_hash_not_one(self) -> None:
+        """Which is how PEP 8 says to write one and how every one of these in
+        the corpus is written. One space reads a hash anywhere in a sentence as
+        the start of a comment, and a hash opens a heading in more than one
+        markup language."""
+        assert not classify.is_literal_block("Section # 3 (a heading)")
+
+    def test_the_comment_alone_proves_nothing(self) -> None:
+        assert not classify.is_literal_block("Sorted by  # of downloads")
+
+
+class TestQuotedArguments:
+    def test_a_call_whose_arguments_are_sentences(self) -> None:
+        """The spacing rule reads a space that follows no comma as prose, and
+        the spaces here are inside string literals, where this rule has no
+        opinion about what the text says."""
+        assert classify.is_literal_block("parrot('a million', 'bereft of life', 'jump')")
+
+    def test_a_double_quoted_one(self) -> None:
+        msgid = 'Popen(["/usr/bin/git", "commit", "-m", "Fixes a bug."])'
+        assert classify.classify(msgid) is Kind.LITERAL_BLOCK
+
+    def test_masking_does_not_excuse_the_spacing_outside_the_quotes(self) -> None:
+        """Only the insides are data. A call written with prose spacing between
+        its arguments is still not how anybody writes code."""
+        assert not classify.is_literal_block("sorted() ('a builtin' in module builtins)")
+
+
 class TestVersionMarker:
     @pytest.mark.parametrize(
         "msgid",
