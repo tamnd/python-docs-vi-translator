@@ -1,6 +1,6 @@
 [project]
 name = "python-docs-vi-translator"
-version = "0.1.3"
+version = "0.1.4"
 description = "Translates the CPython documentation into Vietnamese gettext catalogs, with a deterministic audit over every string it writes"
 readme = "README.md"
 license = "MIT"
