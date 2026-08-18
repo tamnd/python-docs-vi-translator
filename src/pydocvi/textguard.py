@@ -78,9 +78,18 @@ _GUARDS = tuple(
 )
 
 #: A fence or a rule opening the answer. The model presenting its work rather
-#: than doing it, which is the same failure wearing different clothes. No
-#: licence: the corpus has literal blocks, but a protected one reaches this
-#: module as a placeholder and never as three backticks.
+#: than doing it, which is the same failure wearing different clothes.
+#:
+#: Licensed by the source opening the same way, which it did not used to be. The
+#: reasoning for having no licence was that the corpus has literal blocks but a
+#: protected one reaches this module as a placeholder and never as three
+#: backticks, and that is true of the translate path and not of the audit.
+#: ``L03`` hands over the raw ``msgstr`` and the raw ``msgid``, with nothing
+#: protected, so an entry whose ``msgid`` is ``---`` arrived here as ``---`` and
+#: was read as a model drawing a rule. Two entries in the corpus are exactly
+#: that: a literal ``---`` in ``c-api/call.po`` and the inheritance diagram in
+#: ``howto/mro.po``, both copied through correctly and both reported as
+#: narration by the check that exists to catch a model talking.
 _FENCE = re.compile(r"^\s*(?:```|~~~|---)")
 
 #: A parenthetical aside about the translation itself, in either language.
@@ -116,7 +125,7 @@ def find(text: str, source: str = "") -> Narration | None:
     without making the decision any different.
     """
     fence = _FENCE.match(text)
-    if fence:
+    if fence and not _FENCE.match(source):
         return Narration(phrase=fence.group(0).strip(), where=0)
 
     hits = [

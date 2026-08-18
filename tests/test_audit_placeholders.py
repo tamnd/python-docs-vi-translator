@@ -173,6 +173,16 @@ class TestP08:
         corpus = over("Return a list.", "Trả về một danh sách.")
         assert findings(placeholders.p08_no_fence, corpus) == []
 
+    def test_a_rule_the_english_opened_is_not_the_model_drawing_one(self) -> None:
+        """Every other rule in this module reads the pair and this one read the
+        translation alone, so a ``msgid`` of ``---`` copied through as ``---``
+        was reported. Two entries in the corpus are that."""
+        assert findings(placeholders.p08_no_fence, over("---", "---")) == []
+
+    def test_a_diagram_that_opens_with_dashes_survives_being_copied(self) -> None:
+        art = " -----------\n|     O     |\n|   /   \\   |"
+        assert findings(placeholders.p08_no_fence, over(art, art)) == []
+
 
 class TestEveryCheckReportsWhereItLooked:
     def test_a_finding_carries_the_file_the_line_and_the_segment(self) -> None:

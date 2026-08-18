@@ -116,10 +116,23 @@ class TestWhatTheSourceLicenses:
         documentation does not say "as an AI", so nothing can excuse it."""
         assert not textguard.clean("As an AI, I note this.", "As an AI system would note that.")
 
-    def test_a_fence_is_never_licensed(self) -> None:
-        """A literal block reaches this module as a placeholder, never as three
-        backticks, so a fence in an answer is always the model presenting."""
-        assert not textguard.clean("```\nTrả về danh sách.\n```", "```\nsorted(x)\n```")
+    def test_a_fence_the_source_did_not_open_is_the_model_presenting(self) -> None:
+        assert not textguard.clean("```\nTrả về danh sách.\n```", "Return a list.")
+
+    def test_a_fence_the_source_opened_is_licensed_like_any_other_phrase(self) -> None:
+        """This asserted the opposite until August 2026, on the grounds that a
+        literal block reaches this module as a placeholder and never as three
+        backticks. True of the translate path and not of the audit, which hands
+        over the raw pair: ``L03`` reported the ``---`` in ``c-api/call.po`` and
+        the class diagram in ``howto/mro.po`` as a model drawing a rule, when
+        both are the English copied through exactly."""
+        assert textguard.clean("---", "---")
+        assert textguard.clean(" ----\n| O  |", " ----\n| O  |")
+
+    def test_a_fence_with_no_source_is_still_narration(self) -> None:
+        """Passing no source licenses nothing, which is the right answer for a
+        caller holding a string and no idea what it was made from."""
+        assert not textguard.clean("---\nTrả về danh sách.")
 
     def test_the_leftmost_phrase_is_the_one_reported_not_the_first_listed(self) -> None:
         found = textguard.find("Trả về danh sách. Xin lỗi. Here is the translation.")
