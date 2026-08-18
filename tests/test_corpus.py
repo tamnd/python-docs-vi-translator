@@ -57,14 +57,18 @@ EXPECTED_HUMAN_SEGMENTS = 1_294
 #: left prose, which is a cheap direction: they are code, they were being sent
 #: to a model, and the model was returning them unchanged and being refused for
 #: it. One batch fewer on a full run.
+#: And again for the no-op rule learning to read the prose inside a role. 130
+#: entries leave ``noop`` for ``prose``, which is the direction that costs
+#: money: they have never been queued and never been checked, and both of those
+#: were silent. +2 batches.
 EXPECTED_KINDS = {
-    "prose": 75_593,
-    "noop": 5_721,
+    "prose": 75_723,
+    "noop": 5_591,
     "doctest": 2_121,
     "literal_block": 2_923,
     "version_marker": 650,
 }
-EXPECTED_BATCHES = 2_801
+EXPECTED_BATCHES = 2_803
 EXPECTED_CHANGELOG_BATCHES = 576
 EXPECTED_OVERSIZED = 6
 EXPECTED_LARGEST_ENTRY = 12_707

@@ -89,6 +89,24 @@ _COMMENTED = re.compile(r"^(.*?\S)\s{2,}#")
 #: A quoted string, whose insides are data and not prose.
 _QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
 
+#: The visible half of a role or a link written with an explicit target, which
+#: is ``:ref:`text <target>``` and ``` `text <url>`_ ```. One pattern for both
+#: because the shape is the same and so is the question about it. ``P03`` and
+#: ``P06`` read the other half, the part that must not be translated.
+_DISPLAY = re.compile(r"`([^`<>]+?)\s*<[^>]*>`")
+
+#: A whole word, anchored, so that a token has to be a word rather than contain
+#: one. ``base_exec_prefix`` is one identifier and not three words.
+_WHOLE = re.compile(r"^[A-Za-z]{2,}$")
+
+#: Punctuation to take off a token before asking whether it is a word.
+_TRIM = ".,;:()[]'\""
+
+#: How many words of display text stop an entry being a no-op. One word is
+#: usually an identifier, and see :func:`_displayed` for why erring towards
+#: leaving those alone is the cautious direction.
+_PROSE_WORDS = 2
+
 #: A terminal prompt, with the virtualenv name some transcripts put in front of
 #: it. One of these anywhere in an entry makes the whole entry a transcript,
 #: because the lines around a prompt are the output of the command in it.
@@ -369,8 +387,47 @@ def is_noop(msgid: str) -> bool:
     or more ASCII letters remains. ``:mod:`os.path``` is a no-op. ``the
     :mod:`os.path` module`` is not, and the difference is the four English words
     a reader would otherwise meet in the middle of a Vietnamese page.
+
+    Unless the markup itself carries prose, which is the case this rule missed
+    for as long as it existed. A role written ``:ref:`text <target>``` has words
+    a reader sees inside the backticks, and stripping the span takes them away
+    with the target. ``:ref:`Documentation on attributes and methods on classes
+    <class-attrs-and-methods>``` came out a no-op, which meant :func:`batch`
+    never queued it and :meth:`Corpus.prose` never showed it to a check. Seven
+    English words, invisible from every angle that would have reported them.
+
+    It only surfaced because one person had translated one of these by hand,
+    correctly, and that made it the one non-prose entry in the mirror whose
+    translation was not a copy of its source. 130 entries in the corpus are this
+    shape.
+
+    See :func:`_displayed` for where the line is drawn, which is the same line
+    :func:`is_version_marker` draws and for the same reason.
     """
-    return not _WORD.search(strip_markup(msgid))
+    return not _WORD.search(strip_markup(msgid)) and not _displayed(msgid)
+
+
+def _displayed(msgid: str) -> bool:
+    """Whether a role or link in the entry carries prose a reader sees.
+
+    Two or more whole words, counted between the spaces rather than by running
+    :data:`_WORD` over the text. The difference is 136 entries and every one of
+    them is wrong: ``:c:member:`base_exec_prefix <PyConfig.base_exec_prefix>```
+    is one identifier, and a pattern looking for runs of letters finds ``base``,
+    ``exec`` and ``prefix`` in it and calls that a sentence.
+
+    So a display text of one word stays a no-op, 81 entries of ``:c:member:``
+    naming a struct field. That is the same call :func:`is_version_marker` makes
+    about a bare token and it is deliberately the cautious one here: a missed
+    entry stays as it is today, and a false positive sends an identifier to a
+    model to be translated into something that links nowhere.
+    """
+    return any(_words(text) >= _PROSE_WORDS for text in _DISPLAY.findall(msgid))
+
+
+def _words(text: str) -> int:
+    """How many whole words the display text has, ignoring punctuation."""
+    return sum(1 for token in text.split() if _WHOLE.match(token.strip(_TRIM)))
 
 
 def counts(msgids: list[str]) -> Counts:

@@ -74,10 +74,14 @@ def test_human_segments_skip_code_that_was_copied_correctly_too() -> None:
 
 
 def test_human_segments_keep_a_no_op_a_person_translated() -> None:
-    """Only code is dropped, not everything the classifier calls non-prose. One
-    no-op in the corpus is a ``:ref:`` whose display text a person translated
-    correctly, and that is a bug in ``is_noop`` rather than a licence to throw
-    the translation away."""
+    """Only code is dropped, not everything the classifier calls non-prose.
+
+    This entry is the one that found the ``is_noop`` bug, back when it was a
+    no-op: a ``:ref:`` whose display text a person had translated correctly,
+    which made it the one non-prose entry in the mirror whose translation was
+    not a copy of its source. The classifier calls it prose now and the
+    assertion is unchanged, because the point was never what kind it is. A
+    translation is kept unless the entry is code."""
     noop = reviewed(
         ":ref:`Documentation on attributes <class-attrs>`.",
         ":ref:`Tài liệu về các thuộc tính <class-attrs>`.",
