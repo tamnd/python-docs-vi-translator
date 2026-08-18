@@ -53,6 +53,20 @@ class TestTerminology:
         term = Term(en="type", vi="type", keep_en=True, note="not kiểu in this sense")
         assert "not kiểu in this sense" in render.terminology([term])
 
+    def test_a_row_that_stands_alone_says_both_things(self) -> None:
+        """``library/struct.po`` has "float" as a cell in the format-code table
+        two entries away from a sentence about floats, so a batch can hold both
+        readings and the rendering on its own would get the cell translated."""
+        line = render.terminology([Term(en="float", vi="số thực", identifier=True)])
+        assert line.startswith("- float -> số thực")
+        assert "leave it in English" in line
+
+    def test_a_keep_en_row_does_not_repeat_itself(self) -> None:
+        """It already says to leave the English alone, and saying it twice on
+        one line is how a prompt starts reading as generated."""
+        term = Term(en="sys", vi="sys", keep_en=True, identifier=True)
+        assert render.terminology([term]) == f"- sys -> {render.KEEP}"
+
     def test_no_matching_row_says_so_rather_than_leaving_a_blank_heading(self) -> None:
         assert render.terminology([]) == render.NO_TERMS
         assert render.NO_TERMS in render.system(())

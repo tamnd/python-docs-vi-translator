@@ -52,6 +52,15 @@ class Term:
     such, and ``G02`` then checks the opposite thing: that the English survived
     rather than that it was replaced.
 
+    ``identifier`` is the field for the words that are both. "float" in a
+    sentence is "số thực" and the corpus says so twice; "float" on its own in the
+    table of struct format codes is the name of a C type and translating it would
+    break the table. One row has to be able to say both things, because the
+    alternative is what the file did before: pick the reading that suits the
+    louder check and be wrong about the other. ``keep_en`` answers the question
+    for running prose, ``identifier`` answers it for an entry that is nothing but
+    the term, and ``L02`` is the only check that asks the second one.
+
     ``context`` is a filter, not prose. It is a fragment matched against the
     entry's ``msgctxt`` and against the file path, so a row carrying one applies
     only where that fragment appears. Prose about a row belongs in ``note``,
@@ -62,6 +71,7 @@ class Term:
     en: str
     vi: str
     keep_en: bool = False
+    identifier: bool = False
     context: str | None = None
     note: str = ""
 
@@ -122,6 +132,16 @@ class Glossary:
     @property
     def kept(self) -> tuple[Term, ...]:
         return tuple(term for term in self.terms if term.keep_en)
+
+    @property
+    def standalone(self) -> tuple[Term, ...]:
+        """The rows an entry may equal and still be correct in English.
+
+        A ``keep_en`` row is one of these without saying so: a term that stays
+        English everywhere stays English standing alone too. The rows that need
+        the flag are the ones translated in a sentence and named in a table.
+        """
+        return tuple(term for term in self.terms if term.keep_en or term.identifier)
 
     def with_terms(self, terms: Iterable[Term], *, version: int | None = None) -> Self:
         rows = tuple(terms)
@@ -344,7 +364,12 @@ def _differs(before: Term, after: Term) -> bool:
     ``note`` is not in here. A note is written for the person reading the file
     and changing one is not a reason to re-queue a few hundred entries.
     """
-    return (before.vi, before.keep_en, before.context) != (after.vi, after.keep_en, after.context)
+    return (before.vi, before.keep_en, before.identifier, before.context) != (
+        after.vi,
+        after.keep_en,
+        after.identifier,
+        after.context,
+    )
 
 
 def _changed(before: Sequence[Term], after: Sequence[Term]) -> bool:
@@ -500,7 +525,7 @@ def loads(text: str) -> Glossary:
 def _row(raw: object, at: int) -> Term:
     if not isinstance(raw, dict):
         raise GlossaryError(f"term {at} is not a mapping")
-    unknown = set(raw) - {"en", "vi", "keep_en", "context", "note"}
+    unknown = set(raw) - {"en", "vi", "keep_en", "identifier", "context", "note"}
     if unknown:
         raise GlossaryError(f"term {at} has unknown field(s): {', '.join(sorted(unknown))}")
     try:
@@ -508,6 +533,7 @@ def _row(raw: object, at: int) -> Term:
             en=str(raw["en"]),
             vi=str(raw["vi"]),
             keep_en=bool(raw.get("keep_en", False)),
+            identifier=bool(raw.get("identifier", False)),
             context=str(raw["context"]) if raw.get("context") else None,
             note=str(raw.get("note", "")),
         )
@@ -537,6 +563,8 @@ def dumps(glossary: Glossary) -> str:
         out.append(f"    vi: {scalar(term.vi)}")
         if term.keep_en:
             out.append("    keep_en: true")
+        if term.identifier:
+            out.append("    identifier: true")
         if term.context is not None:
             out.append(f"    context: {scalar(term.context)}")
         if term.note:
@@ -592,9 +620,18 @@ def table(glossary: Glossary) -> str:
     ]
     for term in match_order(glossary.terms):
         vi = f"`{term.en}` (kept)" if term.keep_en else term.vi
-        note = " ".join(part for part in (_context_note(term), term.note) if part)
+        note = " ".join(
+            part for part in (_context_note(term), _standalone_note(term), term.note) if part
+        )
         lines.append(f"| {term.en} | {vi} | {_cell(note)} |")
     return "\n".join(lines)
+
+
+def _standalone_note(term: Term) -> str:
+    """Said in the table because a reviewer reading one row cannot infer it."""
+    if not term.identifier or term.keep_en:
+        return ""
+    return f"An entry that is only `{term.en}` names the thing and stays English."
 
 
 def _context_note(term: Term) -> str:

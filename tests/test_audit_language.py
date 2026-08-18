@@ -24,6 +24,12 @@ def with_kept(corpus: object, *english: str) -> Corpus:
     return replace(corpus, glossary=Glossary(version=1, terms=terms))  # type: ignore[type-var]
 
 
+def with_standalone(corpus: object, en: str, vi: str) -> Corpus:
+    """The same corpus with one row translated in prose and kept on its own."""
+    terms = (Term(en=en, vi=vi, identifier=True),)
+    return replace(corpus, glossary=Glossary(version=1, terms=terms))  # type: ignore[type-var]
+
+
 class TestL01:
     LONG = "A sentence long enough that a reader would expect a diacritic in it."
 
@@ -78,9 +84,24 @@ class TestL02:
         assert len(findings(language.l02_not_the_source, corpus)) == 1
 
     def test_a_word_the_glossary_does_not_keep_is_still_reported(self) -> None:
-        """``module`` is the other side of the same 144 findings, an ordinary
-        English word used as an index category, and it wants translating."""
-        corpus = with_kept(over("module", "module", flags=()), "sys")
+        """``object`` is the other side of the same 144 findings, an ordinary
+        English word used as an index category, and it wants translating. It is
+        one of 36 such entries and the 124 sentences around them say ``đối
+        tượng`` 93 times."""
+        corpus = with_kept(over("object", "object", flags=()), "sys")
+        assert len(findings(language.l02_not_the_source, corpus)) == 1
+
+    def test_a_row_translated_in_prose_can_still_stand_alone(self) -> None:
+        """``float`` is ``số thực`` in a sentence and the name of a C type in
+        the ``struct`` format table. While this check read ``keep_en`` the row
+        could say one or the other, and saying "keep the English" to get the
+        table cell right made ``G03`` report both correct translations of it."""
+        corpus = with_standalone(over("float", "float", flags=()), "float", "số thực")
+        assert findings(language.l02_not_the_source, corpus) == []
+
+    def test_standing_alone_does_not_excuse_a_sentence(self) -> None:
+        english = "Divide and get a float."
+        corpus = with_standalone(over(english, english), "float", "số thực")
         assert len(findings(language.l02_not_the_source, corpus)) == 1
 
     def test_no_glossary_means_no_exemption_rather_than_a_crash(self) -> None:

@@ -38,6 +38,13 @@ NO_TERMS = "No glossary term appears in these strings."
 #: what to do rather than show a rendering that looks like a no-op.
 KEEP = "leave in English"
 
+#: What an ``identifier`` row adds to its line. Such a row is translated in a
+#: sentence and left alone when the whole string is the term, and a batch is
+#: quite capable of holding both: ``library/struct.po`` has "float" as a cell in
+#: the format-code table two entries away from a sentence about floats. Saying
+#: only the rendering would get the cell translated.
+ALONE = "  (a string that is only this word names the thing: leave it in English)"
+
 #: The first line of the user message names the file and what kind of writing it
 #: is, because the register is not a detail. The tutorial is addressed to a
 #: beginner and the C API reference is addressed to somebody writing an
@@ -134,6 +141,7 @@ def terminology(terms: Sequence[Term]) -> str:
         return NO_TERMS
     return "\n".join(
         f"- {term.en} -> {KEEP if term.keep_en else term.vi}"
+        + (ALONE if term.identifier and not term.keep_en else "")
         + (f"  ({term.note})" if term.note else "")
         for term in terms
     )

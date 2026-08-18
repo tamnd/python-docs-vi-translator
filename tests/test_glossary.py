@@ -75,6 +75,20 @@ class TestGlossary:
         assert [row.en for row in rows.kept] == ["decorator"]
         assert [row.en for row in rows.translated] == ["list"]
 
+    def test_a_kept_row_stands_alone_without_being_told_to(self):
+        """A term that is English in every sentence is English on its own too,
+        so the flag is only ever needed by rows that carry a rendering."""
+        rows = make(term("decorator", "decorator", keep_en=True), term("list", "danh sách"))
+        assert [row.en for row in rows.standalone] == ["decorator"]
+
+    def test_a_translated_row_can_still_stand_alone(self):
+        """The case the field was added for. ``float`` is ``số thực`` in a
+        sentence and the name of a C type in the ``struct`` format table."""
+        rows = make(term("float", "số thực", identifier=True), term("list", "danh sách"))
+        assert [row.en for row in rows.standalone] == ["float"]
+        assert [row.en for row in rows.translated] == ["float", "list"]
+        assert rows.kept == ()
+
     def test_len_counts_rows(self):
         assert len(make(*NESTED)) == 2
 
@@ -287,6 +301,13 @@ class TestDiff:
         after = make(term("decorator", "decorator", keep_en=True), version=2)
         assert len(glossary.diff(before, after).changed) == 1
 
+    def test_flipping_identifier_is_a_change_too(self):
+        """It moves entries in and out of ``L02`` and changes what the prompt
+        says, so a run made before it is not a run made after it."""
+        before = make(term("float", "số thực"))
+        after = make(term("float", "số thực", identifier=True), version=2)
+        assert len(glossary.diff(before, after).changed) == 1
+
     def test_adding_a_context_is_a_change(self):
         before = make(term("list", "danh sách"))
         after = make(term("list", "danh sách", context="stdtypes"), version=2)
@@ -451,10 +472,12 @@ class TestReading:
         text = (
             "version: 1\nterms:\n"
             '  - en: "decorator"\n    vi: "decorator"\n    keep_en: true\n'
+            "    identifier: true\n"
             '    context: "library"\n    note: "the community keeps the English"\n'
         )
         row = glossary.loads(text).terms[0]
-        assert (row.keep_en, row.context, row.note) == (
+        assert (row.keep_en, row.identifier, row.context, row.note) == (
+            True,
             True,
             "library",
             "the community keeps the English",
@@ -513,6 +536,10 @@ class TestWriting:
         assert "keep_en" not in glossary.dumps(make(term("list", "danh sách")))
         assert "keep_en: true" in glossary.dumps(make(term("decorator", "decorator", keep_en=True)))
 
+    def test_identifier_is_written_only_when_it_is_true(self):
+        assert "identifier" not in glossary.dumps(make(term("list", "danh sách")))
+        assert "identifier: true" in glossary.dumps(make(term("float", "số thực", identifier=True)))
+
     def test_the_version_is_written(self):
         assert "version: 7\n" in glossary.dumps(make(version=7))
 
@@ -534,6 +561,7 @@ class TestRoundTrip:
         term("context manager", "trình quản lý ngữ cảnh"),
         term("decorator", "decorator", keep_en=True, note='the community keeps "decorator"'),
         term("list", "danh sách", context="library/stdtypes", note="a\\b"),
+        term("float", "số thực", identifier=True),
         term("no", "no", keep_en=True),
         term("3.15", "3.15", keep_en=True),
     )
@@ -596,6 +624,16 @@ class TestTable:
     def test_the_version_and_the_counts_are_stated(self):
         rendered = glossary.table(make(term("decorator", "decorator", keep_en=True), version=7))
         assert "Version 7. 1 terms, 1 of them kept in English." in rendered
+
+    def test_a_standalone_row_says_so_where_a_reviewer_will_read_it(self):
+        rendered = glossary.table(make(term("float", "số thực", identifier=True)))
+        assert "| float | số thực | An entry that is only `float` names the thing" in rendered
+
+    def test_a_kept_row_does_not_repeat_itself_in_the_note(self):
+        """``standalone`` holds every kept row, and saying so on each of the 52
+        of them would push the useful notes off the side of the table."""
+        rendered = glossary.table(make(term("sys", "sys", keep_en=True, identifier=True)))
+        assert "names the thing" not in rendered
 
     def test_a_context_becomes_a_note_a_reviewer_can_act_on(self):
         rendered = glossary.table(make(term("list", "danh sách", context="stdtypes")))
