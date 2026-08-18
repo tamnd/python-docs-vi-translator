@@ -30,6 +30,42 @@ class TestNoop:
     def test_entries_with_prose_around_the_markup(self, msgid: str) -> None:
         assert not classify.is_noop(msgid)
 
+    @pytest.mark.parametrize(
+        "msgid",
+        [
+            ":ref:`Documentation on attributes and methods on classes <class-attrs-and-methods>`.",
+            ":ref:`A logging cookbook <logging-cookbook>`",
+            ":doc:`Graphical User Interfaces with Tk <library/tk>`",
+            ":term:`Filesystem encoding <filesystem encoding and error handler>`",
+            "`Issue Tracking <https://devguide.python.org/tracker/>`_",
+        ],
+    )
+    def test_a_role_carrying_prose_is_not_a_no_op(self, msgid: str) -> None:
+        """Stripping the span takes the words a reader sees away with the target
+        it was protecting. 130 entries in the corpus are this shape, and until
+        the rule learned to look inside the backticks not one of them had ever
+        been queued or checked."""
+        assert not classify.is_noop(msgid)
+        assert classify.classify(msgid).translatable
+
+    @pytest.mark.parametrize(
+        "msgid",
+        [
+            ":c:member:`base_exec_prefix <PyConfig.base_exec_prefix>`",
+            ":c:member:`argv <PyConfig.argv>`",
+            ":ref:`pymalloc <pymalloc>`",
+        ],
+    )
+    def test_an_identifier_in_the_display_text_is_still_a_no_op(self, msgid: str) -> None:
+        """Counted between the spaces rather than by running the word pattern
+        over the text, which would find ``base``, ``exec`` and ``prefix`` in one
+        identifier and call that a sentence. 136 entries turn on the difference
+        and every one of them is a struct field."""
+        assert classify.is_noop(msgid)
+
+    def test_a_role_with_no_display_text_is_untouched(self) -> None:
+        assert classify.is_noop(":ref:`class-attrs-and-methods`")
+
     def test_a_single_letter_is_not_a_word(self) -> None:
         """One letter beside markup is a label, not a sentence."""
         assert classify.is_noop(":class:`x` a")
